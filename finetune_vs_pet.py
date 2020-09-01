@@ -168,7 +168,7 @@ if __name__ == "__main__":
     train_batch_size = args.train_batch_size
     eval_batch_size = args.eval_batch_size
     xp_dir = args.xp_dir
-    output_dir = os.path.join(xp_dir, model_type)
+    output_dir = os.path.join(xp_dir, f"{model_type}_{'pet' if do_mlm else 'finetuned'}")
     plotting = args.plotting
 
     try:
