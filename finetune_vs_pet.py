@@ -1,3 +1,4 @@
+import json
 import os
 
 import nlp
@@ -226,3 +227,4 @@ if __name__ == "__main__":
     hans_acc = evaluate(model, hans_data, eval_batch_size, hans=True)
     log.append({'test_acc': test_acc, 'hans_acc': hans_acc})
     print("Final results: {}".format(log[-1]))
+    json.dump(log, open(os.path.join(output_dir, "log.json"), 'w'), ensure_ascii=False, indent=2)
