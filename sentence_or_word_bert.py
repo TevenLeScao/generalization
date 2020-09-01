@@ -1,8 +1,10 @@
+import os
+
 import numpy as np
 import torch
 from nltk import word_tokenize
 from torch import nn as nn
-from transformers import BertForMaskedLM, BertTokenizer, RobertaForMaskedLM, RobertaTokenizer
+from transformers import BertForMaskedLM, BertTokenizer, RobertaForMaskedLM, RobertaTokenizer, PreTrainedModel
 
 from utils import use_cuda, from_numpy
 

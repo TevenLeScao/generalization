@@ -1,3 +1,5 @@
+import os
+
 import nlp
 import nltk
 from nltk.tokenize import word_tokenize
@@ -8,87 +10,34 @@ import logging
 from argparsing import parser
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
-from utils import use_cuda, from_numpy
+from classifiers import MLPClassifier, MLMClassifier
+from utils import from_numpy
 from sentence_or_word_bert import ModelWrapper
 
 logger = logging.getLogger(__name__)
 nltk.download('punkt')
 
 
-class MLPClassifier(nn.Module):
-    def __init__(self, model: ModelWrapper, num_classes):
-        super().__init__()
-        self.model = model
-        self.model_type = model.model_type
-        self.dropout = nn.Dropout(p=0.1)
-        self.span_tip = nn.Linear(self.model.dim, num_classes)
-
-        if use_cuda:
-            self.cuda()
-
-    def forward(self, sentences, word_level=False):
-        embs, _, _ = self.model.annotate(sentences, word_level=word_level)
-        return self.span_tip(self.dropout(embs))
-
-    def freeze_head(self, freeze=True):
-        for param in self.span_tip.parameters():
-            param.requires_grad = not freeze
-
-
-class MLMClassifier(nn.Module):
-    def __init__(self, model: ModelWrapper, classes):  # ex: [['he', 'him', 'himself'], ['she', 'her', 'herself']]
-        super().__init__()
-        self.model = model
-        self.model_type = model.model_type
-        self.classes = classes
-        self.class_ids = []
-        for lst in classes:
-            ids = [self.model.tokenizer.convert_tokens_to_ids(word) for word in lst]
-            assert self.model.tokenizer.unk_token_id not in ids
-            self.class_ids.append(ids)
-
-        if use_cuda:
-            self.cuda()
-
-    def forward(self, exmps):
-        # sentences are lists of words, label_masks are lists of 0/1 where 1 = masked
-        sentences, label_masks = [e[0] for e in exmps], [e[1] for e in exmps]
-        if isinstance(label_masks[0], tuple):
-            assert all([sum(mask1 + mask2) == 1 for mask1, mask2 in
-                        label_masks]), "There should be one masked word per sentence pair"
-        else:
-            assert all([sum(mask) == 1 for mask in label_masks]), "There should be one masked word per sentence"
-        output_logits, _, _ = self.model.predict_mlm(sentences, label_masks)
-        assert len(output_logits) == len(sentences), \
-            "Masked words should be one subword, but num_masks {} =/= num_sent {}".format(len(output_logits),
-                                                                                          len(sentences))
-        output_logits = F.log_softmax(output_logits, dim=-1)
-        class_logits = torch.cat(
-            tuple(torch.logsumexp(output_logits[:, ids], dim=-1).unsqueeze(-1) for ids in self.class_ids), dim=-1)
-        return class_logits
-
-
-def calc_dev(model, dev_data, subbatch_size=64):
+def evaluate(model, eval_data, subbatch_size=64):
     model.eval()
     with torch.no_grad():
         preds = None
-        for j in range(0, len(dev_data), subbatch_size):
-            examples = dev_data[j:j + subbatch_size]
+        for j in range(0, len(eval_data), subbatch_size):
+            examples = eval_data[j:j + subbatch_size]
             logits = model([exmp[0] for exmp in examples])
             preds_batch = np.argmax(logits.cpu().numpy(), axis=1)
             if preds is None:
                 preds = preds_batch
             else:
                 preds = np.concatenate((preds, preds_batch), axis=0)
-        dev_acc = np.sum(np.array([exmp[1] for exmp in dev_data]) == preds) / len(dev_data)
-    return dev_acc
+        eval_acc = np.sum(np.array([exmp[1] for exmp in eval_data]) == preds) / len(eval_data)
+    return eval_acc
 
 
-def train(model, train_data, dev_data, lr_base=3e-5, lr_warmup_frac=0.1,
-          epochs=5, batch_size=32, subbatch_size=8, dev_batch_size=64, verbose=True):
+def train(model, train_data, dev_data, output_dir, lr_base=3e-5, lr_warmup_frac=0.1,
+          epochs=5, batch_size=32, subbatch_size=8, eval_batch_size=64, verbose=True):
     print("lr_base: {}, lr_warmup_frac: {}, epochs: {}, batch_size: {}, len(train_data): {}".format(
         lr_base, lr_warmup_frac, epochs, batch_size, len(train_data)))
 
@@ -105,6 +54,7 @@ def train(model, train_data, dev_data, lr_base=3e-5, lr_warmup_frac=0.1,
     check_processed = 0
     check_every = 2048
     train_acc_sum, train_acc_n = 0, 0
+    best_dev_acc = 0
     for epoch in tqdm(range(epochs)):
         np.random.shuffle(train_data)
         for i in tqdm(range(0, len(train_data), batch_size)):
@@ -138,7 +88,8 @@ def train(model, train_data, dev_data, lr_base=3e-5, lr_warmup_frac=0.1,
                 set_lr(lr_ratio)
 
                 if check_processed >= check_every:
-                    log.append({'dev_acc': calc_dev(model, dev_data, dev_batch_size),
+                    dev_acc = evaluate(model, dev_data, eval_batch_size)
+                    log.append({'dev_acc': dev_acc,
                                 'train_acc': train_acc_sum / train_acc_n,
                                 'loss_val': loss_val,
                                 'bert_grad_norm': bert_grad_norm})
@@ -146,6 +97,9 @@ def train(model, train_data, dev_data, lr_base=3e-5, lr_warmup_frac=0.1,
                     check_processed -= check_every
                     if verbose:
                         print("Epoch: {}, Log: {}".format(epoch, log[-1]))
+                    if dev_acc > best_dev_acc:
+                        best_dev_acc = dev_acc
+                        torch.save(model, os.path.join(output_dir, f"best_{model.model_type}"))
     return log
 
 
@@ -202,21 +156,31 @@ if __name__ == "__main__":
     do_mlm = args.mlm
     model_type = args.model
     data_size = args.data_size
+    epochs = args.epochs
     train_batch_size = args.train_batch_size
-    dev_batch_size = args.dev_batch_size
+    eval_batch_size = args.eval_batch_size
+    xp_dir = args.xp_dir
+    output_dir = os.path.join(xp_dir, model_type)
+    plotting = args.plotting
+    try:
+        os.makedirs(output_dir)
+    except OSError:
+        pass
 
     mnli_dataset = nlp.load_dataset('glue', 'mnli')
     hans_dataset = nlp.load_dataset('hans', split="validation")
     num_labels = max([exmp['label'] for exmp in mnli_dataset['validation_matched']]) + 1
     train_data = setup_dataset(mnli_dataset['train'], num_labels, data_size, 'mnli')
     dev_data = setup_dataset(mnli_dataset['validation_matched'], num_labels, 512, 'mnli')
+    test_data = setup_dataset(mnli_dataset['validation_mismatched'], num_labels, 512, 'mnli')
 
     if do_mlm:
         train_data, classes = convert_to_mlm(train_data)
         dev_data, classes = convert_to_mlm(dev_data)
+        test_data, classes = convert_to_mlm(test_data)
 
-    print(len(train_data), len(dev_data))
-    print(train_data[0], dev_data[0])
+    print(len(train_data), len(dev_data), len(test_data))
+    print(train_data[0], dev_data[0], test_data[0])
 
     if model_type == "bert":
         lm = ModelWrapper('bert', 'bert-base-uncased')
@@ -229,10 +193,17 @@ if __name__ == "__main__":
     else:
         model = MLPClassifier(lm, num_labels)
 
-    log = train(model, train_data, dev_data, verbose=True, epochs=5, batch_size=train_batch_size,
-                dev_batch_size=dev_batch_size)
+    log = train(model, train_data, dev_data, output_dir=output_dir, verbose=True, epochs=epochs,
+                batch_size=train_batch_size, eval_batch_size=eval_batch_size)
+
+    if plotting:
+        for key in log[0].keys():
+            plt.plot(np.arange(len(log)), [a[key] for a in log], color='blue')
+            plt.title(key)
+            plt.show()
+
+    print("reloading model")
+    model = torch.load(os.path.join(output_dir, f"best_{model.model_type}"))
+    test_acc = evaluate(model, test_data, eval_batch_size)
+    log.append({'test_acc': test_acc})
     print("Final results: {}".format(log[-1]))
-    for key in log[0].keys():
-        plt.plot(np.arange(len(log)), [a[key] for a in log], color='blue')
-        plt.title(key)
-        plt.show()
