@@ -43,9 +43,9 @@ def train(model, train_data, dev_data, output_dir, lr_base=3e-5, lr_warmup_frac=
     print("lr_base: {}, lr_warmup_frac: {}, epochs: {}, batch_size: {}, len(train_data): {}".format(
         lr_base, lr_warmup_frac, epochs, batch_size, len(train_data)))
 
-    bert_params = [p for n, p in model.named_parameters() if 'mask_score' not in n and p.requires_grad]
+    params = [p for n, p in model.named_parameters() if 'mask_score' not in n and p.requires_grad]
     trainer = torch.optim.Adam([
-        {'params': bert_params, 'lr': 0., 'lr_base': lr_base, 'name': model.model_type}, ], lr=0.)
+        {'params': params, 'lr': 0., 'lr_base': lr_base, 'name': model.model_type}, ], lr=0.)
 
     def set_lr(lr_ratio):
         for param_group in trainer.param_groups:
@@ -73,7 +73,7 @@ def train(model, train_data, dev_data, output_dir, lr_base=3e-5, lr_warmup_frac=
                     labels = np.array([exmp[1] for exmp in examples_subbatch])
                     loss = F.cross_entropy(logits, from_numpy(labels))
                     loss.backward()
-                    bert_grad_norm = torch.nn.utils.clip_grad_norm_(bert_params, np.inf).item()
+                    grad_norm = torch.nn.utils.clip_grad_norm_(params, np.inf).item()
                     loss_val = loss.item()
                     del loss
 
@@ -94,7 +94,7 @@ def train(model, train_data, dev_data, output_dir, lr_base=3e-5, lr_warmup_frac=
                     log.append({'dev_acc': dev_acc,
                                 'train_acc': train_acc_sum / train_acc_n,
                                 'loss_val': loss_val,
-                                'bert_grad_norm': bert_grad_norm})
+                                'grad_norm': grad_norm})
                     train_acc_sum, train_acc_n = 0, 0
                     check_processed -= check_every
                     if verbose:
@@ -154,20 +154,23 @@ def convert_to_mlm(examples):
 
 
 if __name__ == "__main__":
+
     args = parser.parse_args()
     for k, v in vars(args).items():
         logger.info(f"{k}: {v}")
-
+    sanity = args.sanity
     do_mlm = args.mlm
     model_type = args.model
     reload = args.reload
     data_size = args.data_size
+    eval_data_size = args.eval_data_size
     epochs = args.epochs
     train_batch_size = args.train_batch_size
     eval_batch_size = args.eval_batch_size
     xp_dir = args.xp_dir
     output_dir = os.path.join(xp_dir, model_type)
     plotting = args.plotting
+
     try:
         os.makedirs(output_dir)
     except OSError:
@@ -177,10 +180,15 @@ if __name__ == "__main__":
     hans_dataset = nlp.load_dataset('hans', split="validation")
     num_labels_mnli = max([exmp['label'] for exmp in mnli_dataset['validation_matched']]) + 1
     num_labels_hans = max([exmp['label'] for exmp in hans_dataset]) + 1
+
+    if sanity:
+        data_size = 100
+        eval_data_size = 100
+
     train_data = setup_dataset(mnli_dataset['train'], num_labels_mnli, 'mnli', data_size)
-    dev_data = setup_dataset(mnli_dataset['validation_matched'], num_labels_mnli, 'mnli')
-    test_data = setup_dataset(mnli_dataset['validation_mismatched'], num_labels_mnli, 'mnli')
-    hans_data = setup_dataset(hans_dataset, num_labels_hans, 'hans')
+    dev_data = setup_dataset(mnli_dataset['validation_matched'], num_labels_mnli, 'mnli', eval_data_size)
+    test_data = setup_dataset(mnli_dataset['validation_mismatched'], num_labels_mnli, 'mnli', eval_data_size)
+    hans_data = setup_dataset(hans_dataset, num_labels_hans, 'hans', eval_data_size)
 
     if do_mlm:
         train_data, classes = convert_to_mlm(train_data)
