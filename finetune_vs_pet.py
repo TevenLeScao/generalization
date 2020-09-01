@@ -71,7 +71,7 @@ class MLMClassifier(nn.Module):
         return class_logits
 
 
-def calc_dev(model, dev_data, subbatch_size=128):
+def calc_dev(model, dev_data, subbatch_size=64):
     model.eval()
     with torch.no_grad():
         preds = None
@@ -88,7 +88,7 @@ def calc_dev(model, dev_data, subbatch_size=128):
 
 
 def train(model, train_data, dev_data, lr_base=3e-5, lr_warmup_frac=0.1,
-          epochs=5, batch_size=32, subbatch_size=8, verbose=True):
+          epochs=5, batch_size=32, subbatch_size=8, dev_batch_size=64, verbose=True):
     print("lr_base: {}, lr_warmup_frac: {}, epochs: {}, batch_size: {}, len(train_data): {}".format(
         lr_base, lr_warmup_frac, epochs, batch_size, len(train_data)))
 
@@ -138,7 +138,7 @@ def train(model, train_data, dev_data, lr_base=3e-5, lr_warmup_frac=0.1,
                 set_lr(lr_ratio)
 
                 if check_processed >= check_every:
-                    log.append({'dev_acc': calc_dev(model, dev_data),
+                    log.append({'dev_acc': calc_dev(model, dev_data, dev_batch_size),
                                 'train_acc': train_acc_sum / train_acc_n,
                                 'loss_val': loss_val,
                                 'bert_grad_norm': bert_grad_norm})
@@ -202,6 +202,8 @@ if __name__ == "__main__":
     do_mlm = args.mlm
     model_type = args.model
     data_size = args.data_size
+    train_batch_size = args.train_batch_size
+    dev_batch_size = args.dev_batch_size
 
     mnli_dataset = nlp.load_dataset('glue', 'mnli')
     hans_dataset = nlp.load_dataset('hans', split="validation")
@@ -227,7 +229,8 @@ if __name__ == "__main__":
     else:
         model = MLPClassifier(lm, num_labels)
 
-    log = train(model, train_data, dev_data, verbose=True, epochs=5)
+    log = train(model, train_data, dev_data, verbose=True, epochs=5, batch_size=train_batch_size,
+                dev_batch_size=dev_batch_size)
     print("Final results: {}".format(log[-1]))
     for key in log[0].keys():
         plt.plot(np.arange(len(log)), [a[key] for a in log], color='blue')
