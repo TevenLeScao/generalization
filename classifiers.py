@@ -2,7 +2,7 @@ import torch
 from torch import nn as nn
 from torch.nn import functional as F
 
-from sentence_or_word_bert import ModelWrapper
+from model_wrapper import ModelWrapper
 from utils import use_cuda
 
 

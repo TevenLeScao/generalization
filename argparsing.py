@@ -2,8 +2,9 @@ import argparse
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--mlm", action="store_true")
-parser.add_argument("--data_size", type=int, default=10000)
 parser.add_argument("--model", type=str, default="bert", choices=["bert", "roberta"])
+parser.add_argument("--reload", action="store_true")
+parser.add_argument("--data_size", type=int, default=10000)
 parser.add_argument("--epochs", type=int, default=5)
 parser.add_argument("--train_batch_size", type=int, default=32)
 parser.add_argument("--eval_batch_size", type=int, default=64)

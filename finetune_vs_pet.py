@@ -14,13 +14,13 @@ import torch.nn.functional as F
 
 from classifiers import MLPClassifier, MLMClassifier
 from utils import from_numpy
-from sentence_or_word_bert import ModelWrapper
+from model_wrapper import ModelWrapper
 
 logger = logging.getLogger(__name__)
 nltk.download('punkt')
 
 
-def evaluate(model, eval_data, subbatch_size=64):
+def evaluate(model, eval_data, subbatch_size=64, hans=False):
     model.eval()
     with torch.no_grad():
         preds = None
@@ -32,6 +32,8 @@ def evaluate(model, eval_data, subbatch_size=64):
                 preds = preds_batch
             else:
                 preds = np.concatenate((preds, preds_batch), axis=0)
+            if hans:
+                preds = np.clip(preds, 0, 1)
         eval_acc = np.sum(np.array([exmp[1] for exmp in eval_data]) == preds) / len(eval_data)
     return eval_acc
 
@@ -103,12 +105,15 @@ def train(model, train_data, dev_data, output_dir, lr_base=3e-5, lr_warmup_frac=
     return log
 
 
-def setup_dataset(dataset, num_labels, num_examples, dataset_name):
+def setup_dataset(dataset, num_labels, dataset_name, num_examples=None):
     np.random.seed(0)
     idx = np.arange(len(dataset))
     np.random.shuffle(idx)
 
-    if dataset_name == 'mnli':
+    if num_examples == None:
+        num_examples = len(dataset)
+
+    if dataset_name in ('mnli', 'hans'):
         num_per_label = num_examples // num_labels
         current_num_per_label = [0 for _ in range(num_labels)]
         examples = []
@@ -155,6 +160,7 @@ if __name__ == "__main__":
 
     do_mlm = args.mlm
     model_type = args.model
+    reload = args.reload
     data_size = args.data_size
     epochs = args.epochs
     train_batch_size = args.train_batch_size
@@ -169,15 +175,18 @@ if __name__ == "__main__":
 
     mnli_dataset = nlp.load_dataset('glue', 'mnli')
     hans_dataset = nlp.load_dataset('hans', split="validation")
-    num_labels = max([exmp['label'] for exmp in mnli_dataset['validation_matched']]) + 1
-    train_data = setup_dataset(mnli_dataset['train'], num_labels, data_size, 'mnli')
-    dev_data = setup_dataset(mnli_dataset['validation_matched'], num_labels, 512, 'mnli')
-    test_data = setup_dataset(mnli_dataset['validation_mismatched'], num_labels, 512, 'mnli')
+    num_labels_mnli = max([exmp['label'] for exmp in mnli_dataset['validation_matched']]) + 1
+    num_labels_hans = max([exmp['label'] for exmp in hans_dataset]) + 1
+    train_data = setup_dataset(mnli_dataset['train'], num_labels_mnli, 'mnli', data_size)
+    dev_data = setup_dataset(mnli_dataset['validation_matched'], num_labels_mnli, 'mnli')
+    test_data = setup_dataset(mnli_dataset['validation_mismatched'], num_labels_mnli, 'mnli')
+    hans_data = setup_dataset(hans_dataset, num_labels_hans, 'hans')
 
     if do_mlm:
         train_data, classes = convert_to_mlm(train_data)
         dev_data, classes = convert_to_mlm(dev_data)
         test_data, classes = convert_to_mlm(test_data)
+        hans_data, hans_classes = convert_to_mlm(hans_data)
 
     print(len(train_data), len(dev_data), len(test_data))
     print(train_data[0], dev_data[0], test_data[0])
@@ -191,10 +200,11 @@ if __name__ == "__main__":
     if do_mlm:
         model = MLMClassifier(lm, classes)
     else:
-        model = MLPClassifier(lm, num_labels)
+        model = MLPClassifier(lm, num_labels_mnli)
 
-    log = train(model, train_data, dev_data, output_dir=output_dir, verbose=True, epochs=epochs,
-                batch_size=train_batch_size, eval_batch_size=eval_batch_size)
+    if not reload:
+        log = train(model, train_data, dev_data, output_dir=output_dir, verbose=True, epochs=epochs,
+                    batch_size=train_batch_size, eval_batch_size=eval_batch_size)
 
     if plotting:
         for key in log[0].keys():
@@ -205,5 +215,6 @@ if __name__ == "__main__":
     print("reloading model")
     model = torch.load(os.path.join(output_dir, f"best_{model.model_type}"))
     test_acc = evaluate(model, test_data, eval_batch_size)
-    log.append({'test_acc': test_acc})
+    hans_acc = evaluate(model, hans_data, eval_batch_size, hans=True)
+    log.append({'test_acc': test_acc, 'hans_acc': hans_acc})
     print("Final results: {}".format(log[-1]))
