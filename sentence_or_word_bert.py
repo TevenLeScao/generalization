@@ -4,7 +4,7 @@ from nltk import word_tokenize
 from torch import nn as nn
 from transformers import BertForMaskedLM, BertTokenizer, RobertaForMaskedLM, RobertaTokenizer
 
-from finetune_vs_pet import use_cuda, from_numpy
+from utils import use_cuda, from_numpy
 
 
 class SentenceOrWordBert(nn.Module):

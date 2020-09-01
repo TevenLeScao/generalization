@@ -3,7 +3,7 @@ import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument("--mlm", action="store_true")
 parser.add_argument("--data_size", type=int, default=10000)
-parser.add_argument("--model", type=str, default=None, choices=["bert", "roberta"])
+parser.add_argument("--model", type=str, default="bert", choices=["bert", "roberta"])
 
 # parser.add_argument("--sanity", action="store_true")
 # parser.add_argument("--depth", type=int, default=2)
