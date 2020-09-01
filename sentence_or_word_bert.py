@@ -7,7 +7,7 @@ from transformers import BertForMaskedLM, BertTokenizer, RobertaForMaskedLM, Rob
 from utils import use_cuda, from_numpy
 
 
-class SentenceOrWordBert(nn.Module):
+class ModelWrapper(nn.Module):
     def __init__(self, model_type, model_name):
         super().__init__()
         MODEL_CLASSES = {
@@ -16,12 +16,12 @@ class SentenceOrWordBert(nn.Module):
         }
         model_class, tokenizer_class = MODEL_CLASSES[model_type]
         self.tokenizer = tokenizer_class.from_pretrained(model_name, do_lower_case=('uncased' in model_name))
-        self.bert_lm = model_class.from_pretrained(model_name)
-        self.bert = self.bert_lm.bert
+        self.lm = model_class.from_pretrained(model_name)
+        self.transformer = getattr(self.lm, model_type)
         self.model_type = model_type
 
-        self.dim = self.bert.pooler.dense.in_features
-        self.max_len = self.bert.embeddings.position_embeddings.num_embeddings
+        self.dim = self.transformer.pooler.dense.in_features
+        self.max_len = self.transformer.embeddings.position_embeddings.num_embeddings
 
         self.unmasked_label_id = -100
 
@@ -119,7 +119,7 @@ class SentenceOrWordBert(nn.Module):
             input_mask = all_input_mask[i:i + subbatch_size]
 
             # (batch, len, dim or vocab_size), tuple((batch, heads, len, len) x layers)
-            features, _, attentions = self.bert(input_ids, attention_mask=input_mask, output_attentions=True)
+            features, _, attentions = self.transformer(input_ids, attention_mask=input_mask, output_attentions=True)
 
             if features_all is None:
                 features_all = features
@@ -162,8 +162,8 @@ class SentenceOrWordBert(nn.Module):
             input_mask = all_input_mask[i:i + subbatch_size]
             label_ids = all_label_ids[i:i + subbatch_size]
 
-            loss, logits, attentions = self.bert_lm(input_ids, attention_mask=input_mask, labels=label_ids,
-                                                    output_attentions=True)
+            loss, logits, attentions = self.lm(input_ids, attention_mask=input_mask, labels=label_ids,
+                                               output_attentions=True)
             logits = logits.masked_select((label_ids != -100).unsqueeze(-1)).reshape(-1, logits.shape[-1])
 
             if loss_sum is None:
