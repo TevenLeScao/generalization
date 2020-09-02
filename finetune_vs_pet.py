@@ -227,8 +227,9 @@ if __name__ == "__main__":
 
     print("reloading model")
     model = torch.load(os.path.join(output_dir, f"best_{model.model_type}"))
+    dev_acc = evaluate(model, dev_data, eval_batch_size)
     test_acc = evaluate(model, test_data, eval_batch_size)
     hans_acc = evaluate(model, hans_data, eval_batch_size, hans=True)
-    log.append({'test_acc': test_acc, 'hans_acc': hans_acc})
+    log.append({'dev_acc': dev_acc, 'test_acc': test_acc, 'hans_acc': hans_acc})
     print("Final results: {}".format(log[-1]))
     json.dump(log, open(os.path.join(output_dir, "log.json"), 'w'), ensure_ascii=False, indent=2)
