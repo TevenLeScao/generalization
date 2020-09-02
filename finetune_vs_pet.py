@@ -39,7 +39,7 @@ def evaluate(model, eval_data, subbatch_size=64, hans=False):
     return eval_acc
 
 
-def train(model, train_data, dev_data, output_dir, lr_base=3e-5, lr_warmup_frac=0.1, epochs=5, batch_size=32,
+def train(model, train_data, dev_data, hans_data, output_dir, lr_base=3e-5, lr_warmup_frac=0.1, epochs=5, batch_size=32,
           subbatch_size=8, eval_batch_size=64, check_every=2048, initial_check=False, verbose=True):
     print("lr_base: {}, lr_warmup_frac: {}, epochs: {}, batch_size: {}, len(train_data): {}".format(
         lr_base, lr_warmup_frac, epochs, batch_size, len(train_data)))
@@ -70,7 +70,7 @@ def train(model, train_data, dev_data, output_dir, lr_base=3e-5, lr_warmup_frac=
 
                 if check_processed >= check_every:
                     dev_acc = evaluate(model, dev_data, eval_batch_size)
-                    hans_acc = evaluate(model, dev_data, eval_batch_size, hans=True)
+                    hans_acc = evaluate(model, hans_data, eval_batch_size, hans=True)
                     train_acc = train_acc_sum / train_acc_n if train_acc_n > 0 else None
                     log.append({'dev_acc': dev_acc,
                                 'hans_acc': hans_acc,
@@ -215,7 +215,7 @@ if __name__ == "__main__":
         model = MLPClassifier(lm, num_labels_mnli)
 
     if not reload:
-        log = train(model, train_data, dev_data, output_dir=output_dir, verbose=True, epochs=epochs,
+        log = train(model, train_data, dev_data, hans_data, output_dir=output_dir, verbose=True, epochs=epochs,
                     batch_size=train_batch_size, eval_batch_size=eval_batch_size, check_every=check_every,
                     initial_check=initial_check)
 
