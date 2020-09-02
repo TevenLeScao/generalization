@@ -10,6 +10,8 @@ parser.add_argument("--eval_data_size", type=int, default=None)
 parser.add_argument("--epochs", type=int, default=5)
 parser.add_argument("--train_batch_size", type=int, default=32)
 parser.add_argument("--eval_batch_size", type=int, default=64)
+parser.add_argument("--check_every", type=int, default=2048)
+parser.add_argument("--initial_check", action="store_true")
 parser.add_argument("--xp_dir", type=str, default="experiments")
 parser.add_argument("--plotting", action="store_true")
 

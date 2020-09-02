@@ -39,8 +39,8 @@ def evaluate(model, eval_data, subbatch_size=64, hans=False):
     return eval_acc
 
 
-def train(model, train_data, dev_data, output_dir, lr_base=3e-5, lr_warmup_frac=0.1,
-          epochs=5, batch_size=32, subbatch_size=8, eval_batch_size=64, verbose=True):
+def train(model, train_data, dev_data, output_dir, lr_base=3e-5, lr_warmup_frac=0.1, epochs=5, batch_size=32,
+          subbatch_size=8, eval_batch_size=64, check_every=2048, initial_check=False, verbose=True):
     print("lr_base: {}, lr_warmup_frac: {}, epochs: {}, batch_size: {}, len(train_data): {}".format(
         lr_base, lr_warmup_frac, epochs, batch_size, len(train_data)))
 
@@ -54,8 +54,10 @@ def train(model, train_data, dev_data, output_dir, lr_base=3e-5, lr_warmup_frac=
 
     log = []
     processed = 0
-    check_processed = 0
-    check_every = 2048
+    if initial_check:
+        check_processed = check_every
+    else:
+        check_processed = 0
     train_acc_sum, train_acc_n = 0, 0
     best_dev_acc = 0
     for epoch in tqdm(range(epochs)):
@@ -66,6 +68,21 @@ def train(model, train_data, dev_data, output_dir, lr_base=3e-5, lr_warmup_frac=
                 model.train()
                 trainer.zero_grad()
 
+                if check_processed >= check_every:
+                    dev_acc = evaluate(model, dev_data, eval_batch_size)
+                    hans_acc = evaluate(model, dev_data, eval_batch_size, hans=True)
+                    train_acc = train_acc_sum / train_acc_n if train_acc_n > 0 else None
+                    log.append({'dev_acc': dev_acc,
+                                'hans_acc': hans_acc,
+                                'train_acc': train_acc})
+                    train_acc_sum, train_acc_n = 0, 0
+                    check_processed -= check_every
+                    if verbose:
+                        print("Epoch: {}, Log: {}".format(epoch, log[-1]))
+                    if dev_acc > best_dev_acc:
+                        best_dev_acc = dev_acc
+                        torch.save(model, os.path.join(output_dir, f"best_{model.model_type}"))
+
                 for j in range(0, len(examples), subbatch_size):
                     examples_subbatch = examples[j:j + subbatch_size]
 
@@ -74,8 +91,6 @@ def train(model, train_data, dev_data, output_dir, lr_base=3e-5, lr_warmup_frac=
                     labels = np.array([exmp[1] for exmp in examples_subbatch])
                     loss = F.cross_entropy(logits, from_numpy(labels))
                     loss.backward()
-                    grad_norm = torch.nn.utils.clip_grad_norm_(params, np.inf).item()
-                    loss_val = loss.item()
                     del loss
 
                     batch_acc = np.sum(labels == np.argmax(logits.detach().cpu().numpy(), axis=1)) / len(labels)
@@ -89,20 +104,6 @@ def train(model, train_data, dev_data, output_dir, lr_base=3e-5, lr_warmup_frac=
                 # warmup from 0 to lr_base for lr_warmup_frac
                 lr_ratio = min(1, processed / (lr_warmup_frac * epochs * len(train_data)))
                 set_lr(lr_ratio)
-
-                if check_processed >= check_every:
-                    dev_acc = evaluate(model, dev_data, eval_batch_size)
-                    log.append({'dev_acc': dev_acc,
-                                'train_acc': train_acc_sum / train_acc_n,
-                                'loss_val': loss_val,
-                                'grad_norm': grad_norm})
-                    train_acc_sum, train_acc_n = 0, 0
-                    check_processed -= check_every
-                    if verbose:
-                        print("Epoch: {}, Log: {}".format(epoch, log[-1]))
-                    if dev_acc > best_dev_acc:
-                        best_dev_acc = dev_acc
-                        torch.save(model, os.path.join(output_dir, f"best_{model.model_type}"))
     return log
 
 
@@ -168,6 +169,8 @@ if __name__ == "__main__":
     epochs = args.epochs
     train_batch_size = args.train_batch_size
     eval_batch_size = args.eval_batch_size
+    check_every = args.check_every
+    initial_check = args.initial_check
     xp_dir = args.xp_dir
     output_dir = os.path.join(xp_dir, f"{model_type}_{'pet' if do_mlm else 'finetuned'}")
     plotting = args.plotting
@@ -213,7 +216,8 @@ if __name__ == "__main__":
 
     if not reload:
         log = train(model, train_data, dev_data, output_dir=output_dir, verbose=True, epochs=epochs,
-                    batch_size=train_batch_size, eval_batch_size=eval_batch_size)
+                    batch_size=train_batch_size, eval_batch_size=eval_batch_size, check_every=check_every,
+                    initial_check=initial_check)
 
     if plotting:
         for key in log[0].keys():
