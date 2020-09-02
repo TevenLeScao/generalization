@@ -39,7 +39,8 @@ def evaluate(model, eval_data, subbatch_size=64, hans=False):
     return eval_acc
 
 
-def train(model, train_data, dev_data, hans_data, output_dir, lr_base=3e-5, lr_warmup_frac=0.1, epochs=5, batch_size=32,
+def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_dir, lr_base=3e-5, lr_warmup_frac=0.1,
+          epochs=5, batch_size=32,
           subbatch_size=8, eval_batch_size=64, check_every=2048, initial_check=False, verbose=True):
     print("lr_base: {}, lr_warmup_frac: {}, epochs: {}, batch_size: {}, len(train_data): {}".format(
         lr_base, lr_warmup_frac, epochs, batch_size, len(train_data)))
@@ -70,10 +71,12 @@ def train(model, train_data, dev_data, hans_data, output_dir, lr_base=3e-5, lr_w
 
                 if check_processed >= check_every:
                     dev_acc = evaluate(model, dev_data, eval_batch_size)
-                    hans_acc = evaluate(model, hans_data, eval_batch_size, hans=True)
+                    hans_easy_acc = evaluate(model, hans_easy_data, eval_batch_size, hans=True)
+                    hans_hard_acc = evaluate(model, hans_hard_data, eval_batch_size, hans=True)
                     train_acc = train_acc_sum / train_acc_n if train_acc_n > 0 else None
                     log.append({'dev_acc': dev_acc,
-                                'hans_acc': hans_acc,
+                                'hans_easy_acc': hans_easy_acc,
+                                'hans_hard_acc': hans_hard_acc,
                                 'train_acc': train_acc})
                     train_acc_sum, train_acc_n = 0, 0
                     check_processed -= check_every
@@ -181,9 +184,10 @@ if __name__ == "__main__":
         pass
 
     mnli_dataset = nlp.load_dataset('glue', 'mnli')
-    hans_dataset = nlp.load_dataset('hans', split="validation")
-    num_labels_mnli = max([exmp['label'] for exmp in mnli_dataset['validation_matched']]) + 1
-    num_labels_hans = max([exmp['label'] for exmp in hans_dataset]) + 1
+    hans_easy_dataset = nlp.load_dataset('hans', split="validation").filter(lambda x: x['label'] == 0)
+    hans_hard_dataset = nlp.load_dataset('hans', split="validation").filter(lambda x: x['label'] == 1)
+    num_labels_mnli = 3
+    num_labels_hans = 2
 
     if sanity:
         data_size = 100
@@ -192,13 +196,15 @@ if __name__ == "__main__":
     train_data = setup_dataset(mnli_dataset['train'], num_labels_mnli, 'mnli', data_size)
     dev_data = setup_dataset(mnli_dataset['validation_matched'], num_labels_mnli, 'mnli', eval_data_size)
     test_data = setup_dataset(mnli_dataset['validation_mismatched'], num_labels_mnli, 'mnli', eval_data_size)
-    hans_data = setup_dataset(hans_dataset, num_labels_hans, 'hans', eval_data_size)
+    hans_easy_data = setup_dataset(hans_easy_dataset, num_labels_hans, 'hans', eval_data_size)
+    hans_hard_data = setup_dataset(hans_hard_dataset, num_labels_hans, 'hans', eval_data_size)
 
     if do_mlm:
         train_data, classes = convert_to_mlm(train_data)
         dev_data, classes = convert_to_mlm(dev_data)
         test_data, classes = convert_to_mlm(test_data)
-        hans_data, hans_classes = convert_to_mlm(hans_data)
+        hans_easy_data, hans_classes = convert_to_mlm(hans_easy_data)
+        hans_hard_data, hans_classes = convert_to_mlm(hans_hard_data)
 
     print(len(train_data), len(dev_data), len(test_data))
     print(train_data[0], dev_data[0], test_data[0])
@@ -215,9 +221,9 @@ if __name__ == "__main__":
         model = MLPClassifier(lm, num_labels_mnli)
 
     if not reload:
-        log = train(model, train_data, dev_data, hans_data, output_dir=output_dir, verbose=True, epochs=epochs,
-                    batch_size=train_batch_size, eval_batch_size=eval_batch_size, check_every=check_every,
-                    initial_check=initial_check)
+        log = train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_dir=output_dir, verbose=True,
+                    epochs=epochs, batch_size=train_batch_size, eval_batch_size=eval_batch_size,
+                    check_every=check_every, initial_check=initial_check)
 
     if plotting:
         for key in log[0].keys():
@@ -229,7 +235,9 @@ if __name__ == "__main__":
     model = torch.load(os.path.join(output_dir, f"best_{model.model_type}"))
     dev_acc = evaluate(model, dev_data, eval_batch_size)
     test_acc = evaluate(model, test_data, eval_batch_size)
-    hans_acc = evaluate(model, hans_data, eval_batch_size, hans=True)
-    log.append({'dev_acc': dev_acc, 'test_acc': test_acc, 'hans_acc': hans_acc})
+    hans_easy_acc = evaluate(model, hans_easy_data, eval_batch_size, hans=True)
+    hans_hard_acc = evaluate(model, hans_hard_data, eval_batch_size, hans=True)
+    log.append(
+        {'dev_acc': dev_acc, 'test_acc': hans_easy_acc, 'hans_easy_acc': hans_easy_acc, 'hans_hard_acc': hans_hard_acc})
     print("Final results: {}".format(log[-1]))
     json.dump(log, open(os.path.join(output_dir, "log.json"), 'w'), ensure_ascii=False, indent=2)
