@@ -92,6 +92,9 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
                     best_dev_acc = dev_acc
                     torch.save(model, os.path.join(output_dir, f"best_{model.model_type}"))
 
+                if hans_hard_acc < 0.01:
+                    check_every *= 10
+
             for j in range(0, len(examples), subbatch_size):
                 examples_subbatch = {k: v[j:j + subbatch_size] for k, v in examples.items()}
 
