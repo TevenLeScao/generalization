@@ -233,11 +233,11 @@ if __name__ == "__main__":
         eval_data_size = 100
 
     if data_size is not None:
-        train_data = train_data.shuffle(seed=seed).select(list(range(data_size)))
+        train_data = train_data.select(list(range(min(len(train_data), data_size))))
     if eval_data_size is not None:
-        dev_data = dev_data.shuffle(seed=seed).select(list(range(eval_data_size)))
-        hans_easy_data = hans_easy_data.shuffle(seed=seed).select(list(range(eval_data_size)))
-        hans_hard_data = hans_hard_data.shuffle(seed=seed).select(list(range(eval_data_size)))
+        dev_data = dev_data.select(list(range(min(len(dev_data), eval_data_size))))
+        hans_easy_data = hans_easy_data.select(list(range(min(len(hans_easy_data), eval_data_size))))
+        hans_hard_data = hans_hard_data.select(list(range(min(len(hans_hard_data), eval_data_size))))
 
     if do_mlm:
         train_data = train_data.map(partial(add_prototype, mask_token=lm.tokenizer.mask_token))
