@@ -75,13 +75,13 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
                 log.append({'dev_acc': dev_acc,
                             'hans_easy_acc': hans_easy_acc,
                             'hans_hard_acc': hans_hard_acc,
-                            'total_hans_acc': hans_easy_acc + hans_hard_acc,
+                            'total_hans_acc': (hans_easy_acc + hans_hard_acc) / 2,
                             'train_acc': train_acc})
                 if local_rank == -1 or torch.distributed.get_rank() == 0 and not sanity:
                     wandb.log({'dev_acc': dev_acc,
                                'hans_easy_acc': hans_easy_acc,
                                'hans_hard_acc': hans_hard_acc,
-                               'total_hans_acc': hans_easy_acc + hans_hard_acc,
+                               'total_hans_acc': (hans_easy_acc + hans_hard_acc) / 2,
                                'train_acc': train_acc},
                               step=step)
                 train_acc_sum, train_acc_n = 0, 0
@@ -279,6 +279,6 @@ if __name__ == "__main__":
     hans_hard_acc = evaluate(model, hans_hard_data, eval_batch_size, hans=True)
     log.append(
         {'dev_acc': dev_acc, 'test_acc': hans_easy_acc, 'hans_easy_acc': hans_easy_acc, 'hans_hard_acc': hans_hard_acc,
-         'total_hans_acc': hans_easy_acc + hans_hard_acc, })
+         'total_hans_acc': (hans_easy_acc + hans_hard_acc) / 2, })
     print("Final results: {}".format(log[-1]))
     json.dump(log, open(os.path.join(output_dir, "log.json"), 'w'), ensure_ascii=False, indent=2)
