@@ -14,6 +14,7 @@ parser.add_argument("--check_every", type=int, default=2048)
 parser.add_argument("--initial_check", action="store_true")
 parser.add_argument("--xp_dir", type=str, default="experiments")
 parser.add_argument("--plotting", action="store_true")
+parser.add_argument("--seed", type=int, default=369)
 parser.add_argument("--local_rank", type=int, default=-1)
 
 # parser.add_argument("--sanity", action="store_true")

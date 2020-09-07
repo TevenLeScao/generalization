@@ -1,17 +1,17 @@
 import json
-import os
-
-import numpy as np
-from tqdm import tqdm
-from matplotlib import pyplot as plt
 import logging
-from argparsing import parser
+import os
 from functools import partial
 
+from matplotlib import pyplot as plt
+from tqdm import tqdm
+import nlp
+import numpy as np
 import torch
 import torch.nn.functional as F
-import nlp
+import wandb
 
+from argparsing import parser
 from classifiers import MLPClassifier, MLMClassifier
 from model_wrapper import ModelWrapper
 
@@ -71,6 +71,11 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
                 hans_hard_acc = evaluate(model, hans_hard_data, eval_batch_size, hans=True)
                 train_acc = train_acc_sum / train_acc_n if train_acc_n > 0 else None
                 log.append({'dev_acc': dev_acc,
+                            'hans_easy_acc': hans_easy_acc,
+                            'hans_hard_acc': hans_hard_acc,
+                            'train_acc': train_acc})
+                if local_rank == -1 or torch.distributed.get_rank() == 0 and not sanity:
+                    wandb.log({'dev_acc': dev_acc,
                             'hans_easy_acc': hans_easy_acc,
                             'hans_hard_acc': hans_hard_acc,
                             'train_acc': train_acc})
@@ -172,8 +177,8 @@ def setup_device(local_rank):
     return device, n_gpu
 
 
-def lambda_function(example, hard=True):
-    return example['label'] == hard
+def run_name(model_type, mlm, samples):
+    return f'{"mlm" if mlm else "finetuned"}_{model_type}_{samples}-datapts'
 
 
 if __name__ == "__main__":
@@ -195,6 +200,7 @@ if __name__ == "__main__":
     xp_dir = args.xp_dir
     output_dir = os.path.join(xp_dir, f"{model_type}_{'pet' if do_mlm else 'finetuned'}")
     plotting = args.plotting
+    seed = args.seed
     local_rank = args.local_rank
 
     try:
@@ -202,7 +208,6 @@ if __name__ == "__main__":
     except OSError:
         pass
     device, n_gpu = setup_device(local_rank)
-
     mnli_dataset = nlp.load_dataset('glue', 'mnli')
     train_data = mnli_dataset['train']
     dev_data = mnli_dataset['validation_matched']
@@ -227,6 +232,13 @@ if __name__ == "__main__":
         data_size = 100
         eval_data_size = 100
 
+    if data_size is not None:
+        train_data = train_data.shuffle(seed=seed).select(list(range(data_size)))
+    if eval_data_size is not None:
+        dev_data = dev_data.shuffle(seed=seed).select(list(range(eval_data_size)))
+        hans_easy_data = hans_easy_data.shuffle(seed=seed).select(list(range(eval_data_size)))
+        hans_hard_data = hans_hard_data.shuffle(seed=seed).select(list(range(eval_data_size)))
+
     if do_mlm:
         train_data = train_data.map(partial(add_prototype, mask_token=lm.tokenizer.mask_token))
         dev_data = dev_data.map(partial(add_prototype, mask_token=lm.tokenizer.mask_token))
@@ -236,6 +248,12 @@ if __name__ == "__main__":
 
     print(len(train_data), len(dev_data), len(test_data))
     print(train_data[0], dev_data[0], test_data[0])
+
+    if (local_rank == -1 or torch.distributed.get_rank() == 0) and not sanity:
+        wandb.init(
+            project=os.getenv("WANDB_PROJECT", "huggingface"), name=run_name(model_type, do_mlm, len(train_data))
+        )
+
 
     if not reload:
         log = train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_dir=output_dir, verbose=True,
