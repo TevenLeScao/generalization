@@ -1,33 +1,30 @@
 import json
 import os
 
-import nlp
-import nltk
-from nltk.tokenize import word_tokenize
 import numpy as np
 from tqdm import tqdm
 from matplotlib import pyplot as plt
 import logging
 from argparsing import parser
+from functools import partial
 
 import torch
 import torch.nn.functional as F
+import nlp
 
 from classifiers import MLPClassifier, MLMClassifier
-from utils import from_numpy
 from model_wrapper import ModelWrapper
 
 logger = logging.getLogger(__name__)
-nltk.download('punkt')
 
 
 def evaluate(model, eval_data, subbatch_size=64, hans=False):
     model.eval()
     with torch.no_grad():
         preds = None
-        for j in range(0, len(eval_data), subbatch_size):
+        for j in tqdm(range(0, len(eval_data), subbatch_size)):
             examples = eval_data[j:j + subbatch_size]
-            logits = model([exmp[0] for exmp in examples])
+            logits = model(examples["premise"], examples["hypothesis"])
             preds_batch = np.argmax(logits.cpu().numpy(), axis=1)
             if preds is None:
                 preds = preds_batch
@@ -35,7 +32,7 @@ def evaluate(model, eval_data, subbatch_size=64, hans=False):
                 preds = np.concatenate((preds, preds_batch), axis=0)
             if hans:
                 preds = np.clip(preds, 0, 1)
-        eval_acc = np.sum(np.array([exmp[1] for exmp in eval_data]) == preds) / len(eval_data)
+        eval_acc = np.sum(np.array([exmp['label'] for exmp in eval_data]) == preds) / len(eval_data)
     return eval_acc
 
 
@@ -46,11 +43,11 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
         lr_base, lr_warmup_frac, epochs, batch_size, len(train_data)))
 
     params = [p for n, p in model.named_parameters() if 'mask_score' not in n and p.requires_grad]
-    trainer = torch.optim.Adam([
+    optimizer = torch.optim.Adam([
         {'params': params, 'lr': 0., 'lr_base': lr_base, 'name': model.model_type}, ], lr=0.)
 
     def set_lr(lr_ratio):
-        for param_group in trainer.param_groups:
+        for param_group in optimizer.param_groups:
             param_group['lr'] = param_group['lr_base'] * lr_ratio
 
     log = []
@@ -62,51 +59,50 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
     train_acc_sum, train_acc_n = 0, 0
     best_dev_acc = 0
     for epoch in tqdm(range(epochs)):
-        np.random.shuffle(train_data)
+        train_data.shuffle()
         for i in tqdm(range(0, len(train_data), batch_size)):
             examples = train_data[i:i + batch_size]
-            if len(examples) == batch_size:
-                model.train()
-                trainer.zero_grad()
+            model.train()
+            optimizer.zero_grad()
 
-                if check_processed >= check_every:
-                    dev_acc = evaluate(model, dev_data, eval_batch_size)
-                    hans_easy_acc = evaluate(model, hans_easy_data, eval_batch_size, hans=True)
-                    hans_hard_acc = evaluate(model, hans_hard_data, eval_batch_size, hans=True)
-                    train_acc = train_acc_sum / train_acc_n if train_acc_n > 0 else None
-                    log.append({'dev_acc': dev_acc,
-                                'hans_easy_acc': hans_easy_acc,
-                                'hans_hard_acc': hans_hard_acc,
-                                'train_acc': train_acc})
-                    train_acc_sum, train_acc_n = 0, 0
-                    check_processed -= check_every
-                    if verbose:
-                        print("Epoch: {}, Log: {}".format(epoch, log[-1]))
-                    if dev_acc > best_dev_acc:
-                        best_dev_acc = dev_acc
-                        torch.save(model, os.path.join(output_dir, f"best_{model.model_type}"))
+            if check_processed >= check_every:
+                dev_acc = evaluate(model, dev_data, eval_batch_size)
+                hans_easy_acc = evaluate(model, hans_easy_data, eval_batch_size, hans=True)
+                hans_hard_acc = evaluate(model, hans_hard_data, eval_batch_size, hans=True)
+                train_acc = train_acc_sum / train_acc_n if train_acc_n > 0 else None
+                log.append({'dev_acc': dev_acc,
+                            'hans_easy_acc': hans_easy_acc,
+                            'hans_hard_acc': hans_hard_acc,
+                            'train_acc': train_acc})
+                train_acc_sum, train_acc_n = 0, 0
+                check_processed -= check_every
+                if verbose:
+                    print("Epoch: {}, Log: {}".format(epoch, log[-1]))
+                if dev_acc > best_dev_acc:
+                    best_dev_acc = dev_acc
+                    torch.save(model, os.path.join(output_dir, f"best_{model.model_type}"))
 
-                for j in range(0, len(examples), subbatch_size):
-                    examples_subbatch = examples[j:j + subbatch_size]
+            for j in range(0, len(examples), subbatch_size):
+                examples_subbatch = {k: v[j:j + subbatch_size] for k, v in examples.items()}
 
-                    # compute loss, also log other metrics
-                    logits = model([exmp[0] for exmp in examples_subbatch])
-                    labels = np.array([exmp[1] for exmp in examples_subbatch])
-                    loss = F.cross_entropy(logits, from_numpy(labels))
-                    loss.backward()
-                    del loss
+                # compute loss, also log other metrics
+                logits = model(examples_subbatch["premise"], examples_subbatch["hypothesis"])
+                labels = torch.tensor(examples_subbatch["label"], device=logits.device)
+                loss = F.cross_entropy(logits, labels)
+                loss.backward()
+                del loss
 
-                    batch_acc = np.sum(labels == np.argmax(logits.detach().cpu().numpy(), axis=1)) / len(labels)
-                    train_acc_sum += batch_acc
-                    train_acc_n += 1
+                batch_acc = np.sum(labels == np.argmax(logits.detach().cpu().numpy(), axis=1)) / len(labels)
+                train_acc_sum += batch_acc
+                train_acc_n += 1
 
-                trainer.step()
-                processed += len(examples)
-                check_processed += len(examples)
+            optimizer.step()
+            processed += len(examples)
+            check_processed += len(examples)
 
-                # warmup from 0 to lr_base for lr_warmup_frac
-                lr_ratio = min(1, processed / (lr_warmup_frac * epochs * len(train_data)))
-                set_lr(lr_ratio)
+            # warmup from 0 to lr_base for lr_warmup_frac
+            lr_ratio = min(1, processed / (lr_warmup_frac * epochs * len(train_data)))
+            set_lr(lr_ratio)
     return log
 
 
@@ -145,17 +141,39 @@ def setup_dataset(dataset, num_labels, dataset_name, num_examples=None):
     return examples
 
 
-def convert_to_mlm(examples):
-    classes = [['yes', 'right'], ['maybe'], ['wrong', 'no']]
-    mlm_examples = []
-    for (hyp, premise), label in examples:
-        hyp = word_tokenize(hyp)
-        premise = [classes[label][0]] + [','] + word_tokenize(premise)
-        mask1 = [0 for _ in hyp]
-        mask2 = [0 for _ in premise]
-        mask2[0] = 1
-        mlm_examples.append((((hyp, premise), (mask1, mask2)), label))
-    return mlm_examples, classes
+def add_prototype(example, mask_token):
+    example["hypothesis"] = f"{mask_token}, " + example["hypothesis"]
+    return example
+
+
+def setup_device(local_rank):
+    if not torch.cuda.is_available():
+        device = torch.device("cpu")
+        n_gpu = 0
+    elif local_rank == -1:
+        # if n_gpu is > 1 we'll use nn.DataParallel.
+        # If you only want to use a specific subset of GPUs use `CUDA_VISIBLE_DEVICES=0`
+        # Explicitly set CUDA to the first (index 0) CUDA device, otherwise `set_device` will
+        # trigger an error that a device index is missing. Index 0 takes into account the
+        # GPUs available in the environment, so `CUDA_VISIBLE_DEVICES=1,2` with `cuda:0`
+        # will use the first GPU in that env, i.e. GPU#1
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        n_gpu = torch.cuda.device_count()
+    else:
+        # Here, we'll use torch.distributed.
+        # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
+        torch.distributed.init_process_group(backend="nccl")
+        device = torch.device("cuda", local_rank)
+        n_gpu = 1
+
+    if device.type == "cuda":
+        torch.cuda.set_device(device)
+
+    return device, n_gpu
+
+
+def lambda_function(example, hard=True):
+    return example['label'] == hard
 
 
 if __name__ == "__main__":
@@ -177,48 +195,47 @@ if __name__ == "__main__":
     xp_dir = args.xp_dir
     output_dir = os.path.join(xp_dir, f"{model_type}_{'pet' if do_mlm else 'finetuned'}")
     plotting = args.plotting
+    local_rank = args.local_rank
 
     try:
         os.makedirs(output_dir)
     except OSError:
         pass
+    device, n_gpu = setup_device(local_rank)
 
     mnli_dataset = nlp.load_dataset('glue', 'mnli')
-    hans_easy_dataset = nlp.load_dataset('hans', split="validation").filter(lambda x: x['label'] == 0)
-    hans_hard_dataset = nlp.load_dataset('hans', split="validation").filter(lambda x: x['label'] == 1)
+    train_data = mnli_dataset['train']
+    dev_data = mnli_dataset['validation_matched']
+    test_data = mnli_dataset['validation_mismatched']
+    hans_easy_data = nlp.load_dataset('hans', split="validation").filter(lambda x: x['label'] == 0)
+    hans_hard_data = nlp.load_dataset('hans', split="validation").filter(lambda x: x['label'] == 1)
     num_labels_mnli = 3
-    num_labels_hans = 2
+
+    if model_type == "bert":
+        lm = ModelWrapper('bert', 'bert-base-uncased', device=device)
+    elif model_type == "roberta":
+        lm = ModelWrapper('roberta', 'roberta-base', device=device)
+    else:
+        raise KeyError(f"model type {model_type} not supported")
+    if do_mlm:
+        classes = [['yes', 'right'], ['maybe'], ['wrong', 'no']]
+        model = MLMClassifier(lm, classes, device=device).to(device)
+    else:
+        model = MLPClassifier(lm, num_labels_mnli, device=device).to(device)
 
     if sanity:
         data_size = 100
         eval_data_size = 100
 
-    train_data = setup_dataset(mnli_dataset['train'], num_labels_mnli, 'mnli', data_size)
-    dev_data = setup_dataset(mnli_dataset['validation_matched'], num_labels_mnli, 'mnli', eval_data_size)
-    test_data = setup_dataset(mnli_dataset['validation_mismatched'], num_labels_mnli, 'mnli', eval_data_size)
-    hans_easy_data = setup_dataset(hans_easy_dataset, num_labels_hans, 'hans', eval_data_size)
-    hans_hard_data = setup_dataset(hans_hard_dataset, num_labels_hans, 'hans', eval_data_size)
-
     if do_mlm:
-        train_data, classes = convert_to_mlm(train_data)
-        dev_data, classes = convert_to_mlm(dev_data)
-        test_data, classes = convert_to_mlm(test_data)
-        hans_easy_data, hans_classes = convert_to_mlm(hans_easy_data)
-        hans_hard_data, hans_classes = convert_to_mlm(hans_hard_data)
+        train_data = train_data.map(partial(add_prototype, mask_token=lm.tokenizer.mask_token))
+        dev_data = dev_data.map(partial(add_prototype, mask_token=lm.tokenizer.mask_token))
+        test_data = test_data.map(partial(add_prototype, mask_token=lm.tokenizer.mask_token))
+        hans_easy_data = hans_easy_data.map(partial(add_prototype, mask_token=lm.tokenizer.mask_token))
+        hans_hard_data = hans_hard_data.map(partial(add_prototype, mask_token=lm.tokenizer.mask_token))
 
     print(len(train_data), len(dev_data), len(test_data))
     print(train_data[0], dev_data[0], test_data[0])
-
-    if model_type == "bert":
-        lm = ModelWrapper('bert', 'bert-base-uncased')
-    elif model_type == "roberta":
-        lm = ModelWrapper('roberta', 'roberta-base')
-    else:
-        raise KeyError(f"model type {model_type} not supported")
-    if do_mlm:
-        model = MLMClassifier(lm, classes)
-    else:
-        model = MLPClassifier(lm, num_labels_mnli)
 
     if not reload:
         log = train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_dir=output_dir, verbose=True,
