@@ -58,6 +58,8 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
         check_processed = 0
     train_acc_sum, train_acc_n = 0, 0
     best_dev_acc = 0
+    step = 0
+
     for epoch in tqdm(range(epochs)):
         train_data.shuffle()
         for i in tqdm(range(0, len(train_data), batch_size)):
@@ -73,12 +75,15 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
                 log.append({'dev_acc': dev_acc,
                             'hans_easy_acc': hans_easy_acc,
                             'hans_hard_acc': hans_hard_acc,
+                            'total_hans_acc': hans_easy_acc + hans_hard_acc,
                             'train_acc': train_acc})
                 if local_rank == -1 or torch.distributed.get_rank() == 0 and not sanity:
                     wandb.log({'dev_acc': dev_acc,
-                            'hans_easy_acc': hans_easy_acc,
-                            'hans_hard_acc': hans_hard_acc,
-                            'train_acc': train_acc})
+                               'hans_easy_acc': hans_easy_acc,
+                               'hans_hard_acc': hans_hard_acc,
+                               'total_hans_acc': hans_easy_acc + hans_hard_acc,
+                               'train_acc': train_acc},
+                              step=step)
                 train_acc_sum, train_acc_n = 0, 0
                 check_processed -= check_every
                 if verbose:
@@ -102,6 +107,7 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
                 train_acc_n += 1
 
             optimizer.step()
+            step += 1
             processed += len(examples)
             check_processed += len(examples)
 
@@ -254,7 +260,6 @@ if __name__ == "__main__":
             project=os.getenv("WANDB_PROJECT", "huggingface"), name=run_name(model_type, do_mlm, len(train_data))
         )
 
-
     if not reload:
         log = train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_dir=output_dir, verbose=True,
                     epochs=epochs, batch_size=train_batch_size, eval_batch_size=eval_batch_size,
@@ -273,6 +278,7 @@ if __name__ == "__main__":
     hans_easy_acc = evaluate(model, hans_easy_data, eval_batch_size, hans=True)
     hans_hard_acc = evaluate(model, hans_hard_data, eval_batch_size, hans=True)
     log.append(
-        {'dev_acc': dev_acc, 'test_acc': hans_easy_acc, 'hans_easy_acc': hans_easy_acc, 'hans_hard_acc': hans_hard_acc})
+        {'dev_acc': dev_acc, 'test_acc': hans_easy_acc, 'hans_easy_acc': hans_easy_acc, 'hans_hard_acc': hans_hard_acc,
+         'total_hans_acc': hans_easy_acc + hans_hard_acc, })
     print("Final results: {}".format(log[-1]))
     json.dump(log, open(os.path.join(output_dir, "log.json"), 'w'), ensure_ascii=False, indent=2)
