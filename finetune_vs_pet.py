@@ -92,7 +92,7 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
                 loss.backward()
                 del loss
 
-                batch_acc = np.sum(labels == np.argmax(logits.detach().cpu().numpy(), axis=1)) / len(labels)
+                batch_acc = (logits.argmax(axis=1) == labels).sum().item() / len(labels)
                 train_acc_sum += batch_acc
                 train_acc_n += 1
 
