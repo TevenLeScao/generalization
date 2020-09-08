@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import random
 from functools import partial
 
 from matplotlib import pyplot as plt
@@ -19,13 +20,22 @@ from utils import add_period
 logger = logging.getLogger(__name__)
 
 
-def evaluate(model, eval_data, subbatch_size=64, hans=False):
+def evaluate(model, eval_data, subbatch_size=64, hans=False, shots=None, train_data=None):
     model.eval()
     with torch.no_grad():
         preds = None
         for j in tqdm(range(0, len(eval_data), subbatch_size)):
             examples = eval_data[j:j + subbatch_size]
-            logits = model(examples["premise"], examples["hypothesis"])
+            if shots is None:
+                logits = model(examples["premise"], examples["hypothesis"])
+            else:
+                assert train_data is not None, "shots passed, indicating lm-style inference, but no train_data"
+                if shots > 0:
+                    shot_indexes = random.sample(list(range(len(train_data))), shots)
+                    shot_data = train_data[shot_indexes]
+                    logits = model(examples["premise"], examples["hypothesis"], shot_data["premise"], shot_data["labeled_hypothesis"])
+                else:
+                    logits = model(examples["premise"], examples["hypothesis"], [], [])
             preds_batch = np.argmax(logits.cpu().numpy(), axis=1)
             if preds is None:
                 preds = preds_batch
@@ -39,7 +49,7 @@ def evaluate(model, eval_data, subbatch_size=64, hans=False):
 
 def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_dir, lr_base=3e-5, lr_warmup_frac=0.1,
           epochs=5, batch_size=32, subbatch_size=8, eval_batch_size=64, check_every=2048, initial_check=False,
-          verbose=True):
+          shots=None, verbose=True):
     print("lr_base: {}, lr_warmup_frac: {}, epochs: {}, batch_size: {}, len(train_data): {}".format(
         lr_base, lr_warmup_frac, epochs, batch_size, len(train_data)))
 
@@ -69,16 +79,16 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
             optimizer.zero_grad()
 
             if check_processed >= check_every:
-                dev_acc = evaluate(model, dev_data, eval_batch_size)
-                hans_easy_acc = evaluate(model, hans_easy_data, eval_batch_size, hans=True)
-                hans_hard_acc = evaluate(model, hans_hard_data, eval_batch_size, hans=True)
+                dev_acc = evaluate(model, dev_data, eval_batch_size, shots=shots, train_data=train_data)
+                hans_easy_acc = evaluate(model, hans_easy_data, eval_batch_size, hans=True, shots=shots, train_data=train_data)
+                hans_hard_acc = evaluate(model, hans_hard_data, eval_batch_size, hans=True, shots=shots, train_data=train_data)
                 train_acc = train_acc_sum / train_acc_n if train_acc_n > 0 else None
                 log.append({'dev_acc': dev_acc,
                             'hans_easy_acc': hans_easy_acc,
                             'hans_hard_acc': hans_hard_acc,
                             'total_hans_acc': (hans_easy_acc + hans_hard_acc) / 2,
                             'train_acc': train_acc})
-                if local_rank == -1 or torch.distributed.get_rank() == 0 and not sanity:
+                if (local_rank == -1 or torch.distributed.get_rank() == 0) and not sanity:
                     wandb.log({'dev_acc': dev_acc,
                                'hans_easy_acc': hans_easy_acc,
                                'hans_hard_acc': hans_hard_acc,
@@ -153,7 +163,10 @@ def setup_dataset(dataset, num_labels, dataset_name, num_examples=None):
     return examples
 
 
-def add_prototype(example, mask_token):
+def add_prototype(example, mask_token, classes):
+    example["premise"] = add_period(example["premise"])
+    fill_in = random.choice(classes[example['label']])
+    example["labeled_hypothesis"] = f"{fill_in}, " + example["hypothesis"]
     example["hypothesis"] = f"{mask_token}, " + example["hypothesis"]
     return example
 
@@ -193,36 +206,23 @@ if __name__ == "__main__":
     args = parser.parse_args()
     for k, v in vars(args).items():
         logger.info(f"{k}: {v}")
+    # args that appear several times
     sanity = args.sanity
     do_mlm = args.mlm
+    shots = args.shots
     model_type = args.model
-    reload = args.reload
     data_size = args.data_size
     eval_data_size = args.eval_data_size
-    epochs = args.epochs
-    train_batch_size = args.train_batch_size
     eval_batch_size = args.eval_batch_size
-    check_every = args.check_every
-    initial_check = args.initial_check
-    xp_dir = args.xp_dir
-    output_dir = os.path.join(xp_dir, f"{model_type}_{'pet' if do_mlm else 'finetuned'}")
-    plotting = args.plotting
-    seed = args.seed
     local_rank = args.local_rank
 
+    output_dir = os.path.join(args.xp_dir, f"{model_type}_{'pet' if do_mlm else 'finetuned'}")
     try:
         os.makedirs(output_dir)
     except OSError:
         pass
-    device, n_gpu = setup_device(local_rank)
-    mnli_dataset = nlp.load_dataset('glue', 'mnli')
-    train_data = mnli_dataset['train']
-    dev_data = mnli_dataset['validation_matched']
-    test_data = mnli_dataset['validation_mismatched']
-    hans_easy_data = nlp.load_dataset('hans', split="validation").filter(lambda x: x['label'] == 0)
-    hans_hard_data = nlp.load_dataset('hans', split="validation").filter(lambda x: x['label'] == 1)
-    num_labels_mnli = 3
 
+    device, n_gpu = setup_device(local_rank)
     if model_type == "bert":
         lm = ModelWrapper('bert', 'bert-base-uncased', device=device)
     elif model_type == "roberta":
@@ -231,9 +231,17 @@ if __name__ == "__main__":
         raise KeyError(f"model type {model_type} not supported")
     if do_mlm:
         classes = [['yes', 'right'], ['maybe'], ['wrong', 'no']]
-        model = MLMClassifier(lm, classes, device=device).to(device)
+        model = MLMClassifier(lm, classes, shots=shots, token_limit=args.token_limit, device=device).to(device)
     else:
-        model = MLPClassifier(lm, num_labels_mnli, device=device).to(device)
+        # MNLI has 3 labels
+        model = MLPClassifier(lm, 3, device=device).to(device)
+
+    mnli_dataset = nlp.load_dataset('glue', 'mnli')
+    train_data = mnli_dataset['train']
+    dev_data = mnli_dataset['validation_matched']
+    test_data = mnli_dataset['validation_mismatched']
+    hans_easy_data = nlp.load_dataset('hans', split="validation").filter(lambda x: x['label'] == 0)
+    hans_hard_data = nlp.load_dataset('hans', split="validation").filter(lambda x: x['label'] == 1)
 
     if sanity:
         data_size = 100
@@ -247,11 +255,12 @@ if __name__ == "__main__":
         hans_hard_data = hans_hard_data.select(list(range(min(len(hans_hard_data), eval_data_size))))
 
     if do_mlm:
-        train_data = train_data.map(partial(add_prototype, mask_token=lm.tokenizer.mask_token))
-        dev_data = dev_data.map(partial(add_prototype, mask_token=lm.tokenizer.mask_token))
-        test_data = test_data.map(partial(add_prototype, mask_token=lm.tokenizer.mask_token))
-        hans_easy_data = hans_easy_data.map(partial(add_prototype, mask_token=lm.tokenizer.mask_token))
-        hans_hard_data = hans_hard_data.map(partial(add_prototype, mask_token=lm.tokenizer.mask_token))
+        mask_token = lm.tokenizer.mask_token
+        train_data = train_data.map(partial(add_prototype, mask_token=mask_token, classes=classes))
+        dev_data = dev_data.map(partial(add_prototype, mask_token=mask_token, classes=classes))
+        test_data = test_data.map(partial(add_prototype, mask_token=mask_token, classes=classes))
+        hans_easy_data = hans_easy_data.map(partial(add_prototype, mask_token=mask_token, classes=classes))
+        hans_hard_data = hans_hard_data.map(partial(add_prototype, mask_token=mask_token, classes=classes))
 
     print(len(train_data), len(dev_data), len(test_data))
     print(train_data[0], dev_data[0], test_data[0])
@@ -261,12 +270,12 @@ if __name__ == "__main__":
             project=os.getenv("WANDB_PROJECT", "huggingface"), name=run_name(model_type, do_mlm, len(train_data))
         )
 
-    if not reload:
+    if not args.reload:
         log = train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_dir=output_dir, verbose=True,
-                    epochs=epochs, batch_size=train_batch_size, eval_batch_size=eval_batch_size,
-                    check_every=check_every, initial_check=initial_check)
+                    epochs=args.epochs, batch_size=args.train_batch_size, eval_batch_size=eval_batch_size,
+                    check_every=args.check_every, initial_check=args.initial_check, shots=shots)
 
-    if plotting:
+    if args.plotting:
         for key in log[0].keys():
             plt.plot(np.arange(len(log)), [a[key] for a in log], color='blue')
             plt.title(key)

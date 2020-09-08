@@ -1,4 +1,6 @@
 import os
+from collections import OrderedDict
+from math import ceil
 
 import numpy as np
 import torch
@@ -37,6 +39,8 @@ class ModelWrapper(nn.Module):
         for k, v in inputs.items():
             if isinstance(v, torch.Tensor):
                 inputs[k] = v.to(self.device)
+            else:
+                inputs[k] = torch.tensor(v).to(self.device)
 
         return inputs
 
@@ -53,30 +57,40 @@ class ModelWrapper(nn.Module):
             "pooler_output"]
         return features
 
-    def encode_outputs_with_conditioning(self, previous_premises, previous_hypotheses):
-        previous_sentences = [[premise + " " + hypothesis for premise, hypothesis in zip(premises, hypotheses)] for
-                              premises, hypotheses in zip(previous_premises, previous_hypotheses)]
-        if self.token_limit is not None:
-            for sentences in previous_sentences:
-                final_encoding = None
-                total_tokens = 0
-                for sentence in sentences:
-                    encoding = self.tokenizer([sentence], return_tensors="pt")
-                    n_tokens = encoding.data['input_ids'].shape[1]
-                    if total_tokens + n_tokens < self.token_limit:
-                        final_encoding = combine_encodings(final_encoding, encoding)
-                    else:
-                        break
-
-
+    def encode_outputs_with_conditioning(self, sentences, previous_sentences, padding=True, pad_to_multiple_of=8):
+        listed_encodings = [None] * len(sentences)
+        previous_encodings = [self.tokenizer(previous_sentence) for previous_sentence in previous_sentences]
+        previous_sizes = [len(encoding.data['input_ids']) for encoding in previous_encodings]
+        for i, sentences in enumerate(sentences):
+            listed_encodings[i] = self.tokenizer(sentences)
+            current_size = len(listed_encodings[i].data['input_ids'])
+            for encoding, size in zip(previous_encodings, previous_sizes):
+                if self.token_limit is None or current_size + size < self.token_limit:
+                    listed_encodings[i] = combine_encodings(listed_encodings[i], encoding)
+                else:
+                    break
+        return self.tokenizer.pad(listed_encodings, padding=padding, pad_to_multiple_of=pad_to_multiple_of)
 
     def predict_mlm(self, premises, hypotheses, previous_premises=None, previous_hypotheses=None):
         """
         Input: tuple of lists of sentences, which are lists of words.
         Output: tensor (num_masked, vocab_size) with prediction logits
         """
+        assert len(premises) == len(hypotheses), f"premises have length {len(premises)}, hypotheses {len(hypotheses)}"
         sentences = [premise + " " + hypothesis for premise, hypothesis in zip(premises, hypotheses)]
-        encoding = self.tokenizer(sentences, padding=True, pad_to_multiple_of=8, return_tensors="pt")
+
+        if previous_premises is not None or previous_hypotheses is not None:
+            assert len(previous_premises) is not None, "conditioning hypotheses given but not premises"
+            assert len(previous_hypotheses) is not None, "conditioning premises given but not hypotheses"
+            assert len(previous_premises) == len(previous_hypotheses), \
+                f"previous premises have length {len(premises)}, hypotheses {len(previous_hypotheses)}"
+
+            previous_sentences = [premise + " " + hypothesis for premise, hypothesis in zip(previous_premises, previous_hypotheses)]
+            encoding = self.encode_outputs_with_conditioning(sentences, previous_sentences)
+
+        else:
+            encoding = self.tokenizer(sentences, padding=True, pad_to_multiple_of=8, return_tensors="pt")
+
         encoding = self._prepare_inputs(encoding)
         label_mask = encoding.data["input_ids"].clone()
         label_mask[label_mask != self.tokenizer.mask_token_id] = self.unmasked_label_id

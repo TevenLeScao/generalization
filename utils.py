@@ -1,3 +1,5 @@
+from collections import OrderedDict
+
 import torch
 
 
@@ -12,4 +14,4 @@ def combine_encodings(previous, current):
     if previous is None:
         return current
     else:
-        return {k: torch.stack((v, current[k]), dim=1) for k, v in previous.items()}
+        return OrderedDict((k, v + current[k]) for k, v in previous.items())

@@ -24,7 +24,7 @@ class MLPClassifier(nn.Module):
 
 
 class MLMClassifier(nn.Module):
-    def __init__(self, model: ModelWrapper, classes, device='cpu',
+    def __init__(self, model: ModelWrapper, classes, device='cpu', shots=None,
                  token_limit=None):  # ex: [['he', 'him', 'himself'], ['she', 'her', 'herself']]
         super().__init__()
         self.model = model
@@ -35,14 +35,12 @@ class MLMClassifier(nn.Module):
             ids = self.model.tokenizer.convert_tokens_to_ids(lst)
             assert self.model.tokenizer.unk_token_id not in ids
             self.class_ids.append(ids)
-
-        self.device = device
+        self.shots = shots
         self.token_limit = token_limit
+        self.device = device
 
     def forward(self, premises, hypotheses, previous_premises=None, previous_hypotheses=None):
         # sentences are lists of words, label_masks are lists of 0/1 where 1 = masked
-        assert len(premises) == len(hypotheses), \
-            f"{len(premises)} premises =/= {len(hypotheses)} hypotheses"
         output_logits = self.model.predict_mlm(premises, hypotheses, previous_premises, previous_hypotheses)
         assert len(output_logits) == len(hypotheses), \
             f"Masked words should be one subword, but num_masks {len(output_logits)} =/= num_sent {len(hypotheses)}"
