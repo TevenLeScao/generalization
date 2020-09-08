@@ -6,9 +6,11 @@ from torch import nn as nn
 from transformers import BertForMaskedLM, BertTokenizerFast, RobertaForMaskedLM, RobertaTokenizerFast, PreTrainedModel, \
     Trainer
 
+from utils import combine_encodings
+
 
 class ModelWrapper(nn.Module):
-    def __init__(self, model_type, model_name, device='cpu'):
+    def __init__(self, model_type, model_name, device='cpu', token_limit=None):
         super().__init__()
         MODEL_CLASSES = {
             'bert': (BertForMaskedLM, BertTokenizerFast),
@@ -25,6 +27,7 @@ class ModelWrapper(nn.Module):
         self.max_len = self.transformer.embeddings.position_embeddings.num_embeddings
 
         self.unmasked_label_id = -100
+        self.token_limit = token_limit
 
     def _prepare_inputs(self, inputs):
         """
@@ -46,10 +49,28 @@ class ModelWrapper(nn.Module):
         encoding = self.tokenizer(text=hypotheses, text_pair=premises, padding=True, pad_to_multiple_of=8,
                                   return_tensors="pt")
         encoding = self._prepare_inputs(encoding)
-        features = self.transformer(encoding.data["input_ids"], attention_mask=encoding.data["attention_mask"])["pooler_output"]
+        features = self.transformer(encoding.data["input_ids"], attention_mask=encoding.data["attention_mask"])[
+            "pooler_output"]
         return features
 
-    def predict_mlm(self, premises, hypotheses):
+    def encode_outputs_with_conditioning(self, previous_premises, previous_hypotheses):
+        previous_sentences = [[premise + " " + hypothesis for premise, hypothesis in zip(premises, hypotheses)] for
+                              premises, hypotheses in zip(previous_premises, previous_hypotheses)]
+        if self.token_limit is not None:
+            for sentences in previous_sentences:
+                final_encoding = None
+                total_tokens = 0
+                for sentence in sentences:
+                    encoding = self.tokenizer([sentence], return_tensors="pt")
+                    n_tokens = encoding.data['input_ids'].shape[1]
+                    if total_tokens + n_tokens < self.token_limit:
+                        final_encoding = combine_encodings(final_encoding, encoding)
+                    else:
+                        break
+
+
+
+    def predict_mlm(self, premises, hypotheses, previous_premises=None, previous_hypotheses=None):
         """
         Input: tuple of lists of sentences, which are lists of words.
         Output: tensor (num_masked, vocab_size) with prediction logits
@@ -60,7 +81,7 @@ class ModelWrapper(nn.Module):
         label_mask = encoding.data["input_ids"].clone()
         label_mask[label_mask != self.tokenizer.mask_token_id] = self.unmasked_label_id
         logits = self.lm(encoding.data["input_ids"], attention_mask=encoding.data["attention_mask"],
-                               labels=label_mask)['logits']
+                         labels=label_mask)['logits']
         logits = logits.masked_select((label_mask != self.unmasked_label_id).unsqueeze(-1)).reshape(-1,
                                                                                                     logits.shape[-1])
         return logits

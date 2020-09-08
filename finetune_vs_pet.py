@@ -14,6 +14,7 @@ import wandb
 from argparsing import parser
 from classifiers import MLPClassifier, MLMClassifier
 from model_wrapper import ModelWrapper
+from utils import add_period
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +38,8 @@ def evaluate(model, eval_data, subbatch_size=64, hans=False):
 
 
 def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_dir, lr_base=3e-5, lr_warmup_frac=0.1,
-          epochs=5, batch_size=32,
-          subbatch_size=8, eval_batch_size=64, check_every=2048, initial_check=False, verbose=True):
+          epochs=5, batch_size=32, subbatch_size=8, eval_batch_size=64, check_every=2048, initial_check=False,
+          verbose=True):
     print("lr_base: {}, lr_warmup_frac: {}, epochs: {}, batch_size: {}, len(train_data): {}".format(
         lr_base, lr_warmup_frac, epochs, batch_size, len(train_data)))
 
@@ -91,9 +92,6 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
                 if dev_acc > best_dev_acc:
                     best_dev_acc = dev_acc
                     torch.save(model, os.path.join(output_dir, f"best_{model.model_type}"))
-
-                if hans_hard_acc < 0.01:
-                    check_every *= 10
 
             for j in range(0, len(examples), subbatch_size):
                 examples_subbatch = {k: v[j:j + subbatch_size] for k, v in examples.items()}
