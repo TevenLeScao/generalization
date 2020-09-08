@@ -217,6 +217,7 @@ if __name__ == "__main__":
     sanity = args.sanity
     do_mlm = args.mlm
     shots = args.shots
+    token_limit = args.token_limit
     model_type = args.model
     data_size = args.data_size
     eval_data_size = args.eval_data_size
@@ -231,14 +232,14 @@ if __name__ == "__main__":
 
     device, n_gpu = setup_device(local_rank)
     if model_type == "bert":
-        lm = ModelWrapper('bert', 'bert-base-uncased', device=device)
+        lm = ModelWrapper('bert', 'bert-base-uncased', token_limit=token_limit, device=device)
     elif model_type == "roberta":
-        lm = ModelWrapper('roberta', 'roberta-base', device=device)
+        lm = ModelWrapper('roberta', 'roberta-base', token_limit=token_limit, device=device)
     else:
         raise KeyError(f"model type {model_type} not supported")
     if do_mlm:
         classes = [['yes', 'right'], ['maybe'], ['wrong', 'no']]
-        model = MLMClassifier(lm, classes, shots=shots, token_limit=args.token_limit, device=device).to(device)
+        model = MLMClassifier(lm, classes, shots=shots, token_limit=token_limit, device=device).to(device)
     else:
         # MNLI has 3 labels
         model = MLPClassifier(lm, 3, device=device).to(device)
