@@ -33,7 +33,8 @@ def evaluate(model, eval_data, subbatch_size=64, hans=False, shots=None, train_d
                 if shots > 0:
                     shot_indexes = random.sample(list(range(len(train_data))), shots)
                     shot_data = train_data[shot_indexes]
-                    logits = model(examples["premise"], examples["hypothesis"], shot_data["premise"], shot_data["labeled_hypothesis"])
+                    logits = model(examples["premise"], examples["hypothesis"], shot_data["premise"],
+                                   shot_data["labeled_hypothesis"])
                 else:
                     logits = model(examples["premise"], examples["hypothesis"], [], [])
             preds_batch = np.argmax(logits.cpu().numpy(), axis=1)
@@ -80,8 +81,10 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
 
             if check_processed >= check_every:
                 dev_acc = evaluate(model, dev_data, eval_batch_size, shots=shots, train_data=train_data)
-                hans_easy_acc = evaluate(model, hans_easy_data, eval_batch_size, hans=True, shots=shots, train_data=train_data)
-                hans_hard_acc = evaluate(model, hans_hard_data, eval_batch_size, hans=True, shots=shots, train_data=train_data)
+                hans_easy_acc = evaluate(model, hans_easy_data, eval_batch_size, hans=True, shots=shots,
+                                         train_data=train_data)
+                hans_hard_acc = evaluate(model, hans_hard_data, eval_batch_size, hans=True, shots=shots,
+                                         train_data=train_data)
                 train_acc = train_acc_sum / train_acc_n if train_acc_n > 0 else None
                 log.append({'dev_acc': dev_acc,
                             'hans_easy_acc': hans_easy_acc,
@@ -278,10 +281,12 @@ if __name__ == "__main__":
             project=os.getenv("WANDB_PROJECT", "huggingface"), name=name
         )
 
+    total_batch_size = args.accumulate * args.train_batch_size
     if not args.reload:
         log = train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_dir=output_dir, verbose=True,
-                    epochs=args.epochs, batch_size=args.train_batch_size, eval_batch_size=eval_batch_size,
-                    check_every=args.check_every, initial_check=args.initial_check, shots=shots)
+                    epochs=args.epochs, batch_size=total_batch_size, subbatch_size=args.train_batch_size,
+                    eval_batch_size=eval_batch_size, check_every=args.check_every, initial_check=args.initial_check,
+                    shots=shots)
 
     if args.plotting:
         for key in log[0].keys():
