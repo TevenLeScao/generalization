@@ -67,6 +67,7 @@ class ModelWrapper(nn.Module):
             for encoding, size in zip(previous_encodings, previous_sizes):
                 if self.token_limit is None or current_size + size < self.token_limit:
                     listed_encodings[i] = combine_encodings(listed_encodings[i], encoding)
+                    current_size += size
                 else:
                     break
         return self.tokenizer.pad(listed_encodings, padding=padding, pad_to_multiple_of=pad_to_multiple_of)
