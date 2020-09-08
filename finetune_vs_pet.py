@@ -290,10 +290,10 @@ if __name__ == "__main__":
 
     print("reloading model")
     model = torch.load(os.path.join(output_dir, f"best_{model.model_type}"))
-    dev_acc = evaluate(model, dev_data, eval_batch_size)
-    test_acc = evaluate(model, test_data, eval_batch_size)
-    hans_easy_acc = evaluate(model, hans_easy_data, eval_batch_size, hans=True)
-    hans_hard_acc = evaluate(model, hans_hard_data, eval_batch_size, hans=True)
+    dev_acc = evaluate(model, dev_data, eval_batch_size, shots=shots, train_data=train_data)
+    test_acc = evaluate(model, test_data, eval_batch_size, shots=shots, train_data=train_data)
+    hans_easy_acc = evaluate(model, hans_easy_data, eval_batch_size, hans=True, shots=shots, train_data=train_data)
+    hans_hard_acc = evaluate(model, hans_hard_data, eval_batch_size, hans=True, shots=shots, train_data=train_data)
     log.append(
         {'dev_acc': dev_acc, 'test_acc': test_acc, 'hans_easy_acc': hans_easy_acc, 'hans_hard_acc': hans_hard_acc,
          'total_hans_acc': (hans_easy_acc + hans_hard_acc) / 2, })
