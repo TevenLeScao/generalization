@@ -270,7 +270,7 @@ if __name__ == "__main__":
     print(len(train_data), len(dev_data), len(test_data))
     print(train_data[0], dev_data[0], test_data[0])
 
-    name = run_name(model_type, do_mlm, len(train_data), shots)
+    name = run_name(model_type, do_mlm, shots, len(train_data))
     output_dir = os.path.join(args.xp_dir, f"{model_type}_{'pet' if do_mlm else 'finetuned'}")
     try:
         os.makedirs(output_dir)
