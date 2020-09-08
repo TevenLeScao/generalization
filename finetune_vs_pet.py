@@ -224,12 +224,6 @@ if __name__ == "__main__":
     eval_batch_size = args.eval_batch_size
     local_rank = args.local_rank
 
-    output_dir = os.path.join(args.xp_dir, f"{model_type}_{'pet' if do_mlm else 'finetuned'}")
-    try:
-        os.makedirs(output_dir)
-    except OSError:
-        pass
-
     device, n_gpu = setup_device(local_rank)
     if model_type == "bert":
         lm = ModelWrapper('bert', 'bert-base-uncased', token_limit=token_limit, device=device)
@@ -273,9 +267,15 @@ if __name__ == "__main__":
     print(len(train_data), len(dev_data), len(test_data))
     print(train_data[0], dev_data[0], test_data[0])
 
+    name = run_name(model_type, do_mlm, len(train_data), shots)
+    output_dir = os.path.join(args.xp_dir, f"{model_type}_{'pet' if do_mlm else 'finetuned'}")
+    try:
+        os.makedirs(output_dir)
+    except OSError:
+        pass
     if (local_rank == -1 or torch.distributed.get_rank() == 0) and not sanity:
         wandb.init(
-            project=os.getenv("WANDB_PROJECT", "huggingface"), name=run_name(model_type, do_mlm, len(train_data), shots)
+            project=os.getenv("WANDB_PROJECT", "huggingface"), name=name
         )
 
     if not args.reload:
@@ -289,8 +289,9 @@ if __name__ == "__main__":
             plt.title(key)
             plt.show()
 
-    print("reloading model")
-    model = torch.load(os.path.join(output_dir, f"best_{model.model_type}"))
+    if args.epochs > 0:
+        print("reloading model")
+        model = torch.load(os.path.join(output_dir, f"best_{model.model_type}"))
     dev_acc = evaluate(model, dev_data, eval_batch_size, shots=shots, train_data=train_data)
     test_acc = evaluate(model, test_data, eval_batch_size, shots=shots, train_data=train_data)
     hans_easy_acc = evaluate(model, hans_easy_data, eval_batch_size, hans=True, shots=shots, train_data=train_data)
