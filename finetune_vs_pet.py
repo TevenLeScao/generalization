@@ -279,7 +279,7 @@ if __name__ == "__main__":
     hans_easy_acc = evaluate(model, hans_easy_data, eval_batch_size, hans=True)
     hans_hard_acc = evaluate(model, hans_hard_data, eval_batch_size, hans=True)
     log.append(
-        {'dev_acc': dev_acc, 'test_acc': hans_easy_acc, 'hans_easy_acc': hans_easy_acc, 'hans_hard_acc': hans_hard_acc,
+        {'dev_acc': dev_acc, 'test_acc': test_acc, 'hans_easy_acc': hans_easy_acc, 'hans_hard_acc': hans_hard_acc,
          'total_hans_acc': (hans_easy_acc + hans_hard_acc) / 2, })
     print("Final results: {}".format(log[-1]))
     json.dump(log, open(os.path.join(output_dir, "log.json"), 'w'), ensure_ascii=False, indent=2)
