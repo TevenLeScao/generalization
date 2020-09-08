@@ -197,8 +197,15 @@ def setup_device(local_rank):
     return device, n_gpu
 
 
-def run_name(model_type, mlm, samples):
-    return f'{"mlm" if mlm else "finetuned"}_{model_type}_{samples}-datapts'
+def run_name(model_type, mlm, shots, samples):
+    if mlm and shots is not None:
+        type = "prompts"
+        samples = shots
+    elif mlm and shots is None:
+        type = "mlm"
+    else:
+        type = "finetuned"
+    return f'{type}_{model_type}_{samples}-datapts'
 
 
 if __name__ == "__main__":
