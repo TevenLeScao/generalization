@@ -274,7 +274,7 @@ if __name__ == "__main__":
 
     if (local_rank == -1 or torch.distributed.get_rank() == 0) and not sanity:
         wandb.init(
-            project=os.getenv("WANDB_PROJECT", "huggingface"), name=run_name(model_type, do_mlm, len(train_data))
+            project=os.getenv("WANDB_PROJECT", "huggingface"), name=run_name(model_type, do_mlm, len(train_data), shots)
         )
 
     if not args.reload:
