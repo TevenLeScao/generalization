@@ -3,6 +3,7 @@ import logging
 import os
 import random
 from functools import partial
+from contextlib import contextmanager
 
 from matplotlib import pyplot as plt
 from tqdm import tqdm
@@ -18,6 +19,21 @@ from model_wrapper import ModelWrapper
 from utils import add_period, distributed_broadcast_scalars
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def torch_distributed_zero_first(local_rank: int):
+    """
+    Decorator to make all processes in distributed training wait for each local_master to do something.
+
+    Args:
+        local_rank (:obj:`int`): The rank of the local process.
+    """
+    if local_rank not in [-1, 0]:
+        torch.distributed.barrier()
+    yield
+    if local_rank == 0:
+        torch.distributed.barrier()
 
 
 def evaluate(model, eval_data, subbatch_size=64, hans=False, shots=None, train_data=None):
