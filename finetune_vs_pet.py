@@ -131,10 +131,10 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
                                    'total_hans_acc': (hans_easy_acc + hans_hard_acc) / 2,
                                    'train_acc': train_acc},
                                   step=step)
+                    if verbose:
+                        print("Epoch: {}, Log: {}".format(epoch, log[-1]))
                 train_acc_sum, train_acc_n = 0, 0
                 check_processed -= check_every
-                if verbose:
-                    print("Epoch: {}, Log: {}".format(epoch, log[-1]))
                 if dev_acc > best_dev_acc:
                     best_dev_acc = dev_acc
                     torch.save(model, os.path.join(output_dir, f"best_{model_type}"))
