@@ -15,7 +15,7 @@ import wandb
 from argparsing import parser
 from classifiers import MLPClassifier, MLMClassifier
 from model_wrapper import ModelWrapper
-from utils import add_period
+from utils import add_period, distributed_broadcast_scalars
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ def evaluate(model, eval_data, subbatch_size=64, hans=False, shots=None, train_d
                 preds = np.concatenate((preds, preds_batch), axis=0)
             if hans:
                 preds = np.clip(preds, 0, 1)
-        eval_acc = np.sum(np.array([exmp['label'] for exmp in eval_data]) == preds) / len(eval_data)
+        eval_acc = np.array([exmp['label'] for exmp in eval_data]) == preds
     return eval_acc
 
 
@@ -74,6 +74,11 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
 
     for epoch in tqdm(range(epochs)):
         train_data.shuffle()
+        if local_rank != -1:
+            train_data = train_data.shard(torch.distributed.get_world_size(), local_rank)
+            dev_data = dev_data.shard(torch.distributed.get_world_size(), local_rank)
+            hans_easy_data = hans_easy_data.shard(torch.distributed.get_world_size(), local_rank)
+            hans_hard_data = hans_hard_data.shard(torch.distributed.get_world_size(), local_rank)
         for i in tqdm(range(0, len(train_data), batch_size)):
             examples = train_data[i:i + batch_size]
             model.train()
@@ -86,12 +91,22 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
                 hans_hard_acc = evaluate(model, hans_hard_data, eval_batch_size, hans=True, shots=shots,
                                          train_data=train_data)
                 train_acc = train_acc_sum / train_acc_n if train_acc_n > 0 else None
-                log.append({'dev_acc': dev_acc,
-                            'hans_easy_acc': hans_easy_acc,
-                            'hans_hard_acc': hans_hard_acc,
-                            'total_hans_acc': (hans_easy_acc + hans_hard_acc) / 2,
-                            'train_acc': train_acc})
                 if (local_rank == -1 or torch.distributed.get_rank() == 0) and not sanity:
+                    if local_rank != -1:
+                        dev_acc = distributed_broadcast_scalars(dev_acc).mean().item()
+                        hans_easy_acc = distributed_broadcast_scalars(hans_easy_acc).mean().item()
+                        hans_hard_acc = distributed_broadcast_scalars(hans_hard_acc).mean().item()
+                        train_acc = distributed_broadcast_scalars(train_acc).mean().item()
+                    else:
+                        dev_acc = np.mean(dev_acc)
+                        hans_easy_acc = np.mean(hans_easy_acc)
+                        hans_hard_acc = np.mean(hans_hard_acc)
+                        train_acc = np.mean(train_acc)
+                    log.append({'dev_acc': dev_acc,
+                                'hans_easy_acc': hans_easy_acc,
+                                'hans_hard_acc': hans_hard_acc,
+                                'total_hans_acc': (hans_easy_acc + hans_hard_acc) / 2,
+                                'train_acc': train_acc})
                     wandb.log({'dev_acc': dev_acc,
                                'hans_easy_acc': hans_easy_acc,
                                'hans_hard_acc': hans_hard_acc,
@@ -129,41 +144,6 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
             lr_ratio = min(1, processed / (lr_warmup_frac * epochs * len(train_data)))
             set_lr(lr_ratio)
     return log
-
-
-def setup_dataset(dataset, num_labels, dataset_name, num_examples=None):
-    np.random.seed(0)
-    idx = np.arange(len(dataset))
-    np.random.shuffle(idx)
-
-    if num_examples == None:
-        num_examples = len(dataset)
-
-    if dataset_name in ('mnli', 'hans'):
-        num_per_label = num_examples // num_labels
-        current_num_per_label = [0 for _ in range(num_labels)]
-        examples = []
-        for i in idx:
-            exmp = dataset[int(i)]
-            if all([num == num_per_label for num in current_num_per_label]):
-                break
-            if current_num_per_label[exmp['label']] < num_per_label:
-                current_num_per_label[exmp['label']] += 1
-                examples.append(((exmp['hypothesis'], exmp['premise']), exmp['label']))
-    elif dataset_name in ('cola', 'sst2'):
-        num_per_label = num_examples // num_labels
-        current_num_per_label = [0 for _ in range(num_labels)]
-        examples = []
-        for i in idx:
-            exmp = dataset[int(i)]
-            if all([num == num_per_label for num in current_num_per_label]):
-                break
-            if current_num_per_label[exmp['label']] < num_per_label:
-                current_num_per_label[exmp['label']] += 1
-                examples.append((exmp['sentence'], exmp['label']))
-    else:
-        assert False, "Not implemented for dataset {}".format(dataset_name)
-    return examples
 
 
 def add_prototype(example, mask_token, classes):
@@ -240,6 +220,13 @@ if __name__ == "__main__":
     else:
         # MNLI has 3 labels
         model = MLPClassifier(lm, 3, device=device).to(device)
+    if local_rank != -1:
+        model = torch.nn.parallel.DistributedDataParallel(
+            model,
+            device_ids=[local_rank],
+            output_device=local_rank,
+            find_unused_parameters=True,
+        )
 
     mnli_dataset = nlp.load_dataset('glue', 'mnli')
     train_data = mnli_dataset['train']
@@ -297,10 +284,12 @@ if __name__ == "__main__":
     if args.epochs > 0:
         print("reloading model")
         model = torch.load(os.path.join(output_dir, f"best_{model.model_type}"))
-    dev_acc = evaluate(model, dev_data, eval_batch_size, shots=shots, train_data=train_data)
-    test_acc = evaluate(model, test_data, eval_batch_size, shots=shots, train_data=train_data)
-    hans_easy_acc = evaluate(model, hans_easy_data, eval_batch_size, hans=True, shots=shots, train_data=train_data)
-    hans_hard_acc = evaluate(model, hans_hard_data, eval_batch_size, hans=True, shots=shots, train_data=train_data)
+    dev_acc = np.mean(evaluate(model, dev_data, eval_batch_size, shots=shots, train_data=train_data))
+    test_acc = np.mean(evaluate(model, test_data, eval_batch_size, shots=shots, train_data=train_data))
+    hans_easy_acc = np.mean(
+        evaluate(model, hans_easy_data, eval_batch_size, hans=True, shots=shots, train_data=train_data))
+    hans_hard_acc = np.mean(
+        evaluate(model, hans_hard_data, eval_batch_size, hans=True, shots=shots, train_data=train_data))
     log.append(
         {'dev_acc': dev_acc, 'test_acc': test_acc, 'hans_easy_acc': hans_easy_acc, 'hans_hard_acc': hans_hard_acc,
          'total_hans_acc': (hans_easy_acc + hans_hard_acc) / 2, })
