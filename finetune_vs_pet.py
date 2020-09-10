@@ -133,11 +133,11 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
                                   step=step)
                     if verbose:
                         print("Epoch: {}, Log: {}".format(epoch, log[-1]))
+                    if dev_acc > best_dev_acc:
+                        best_dev_acc = dev_acc
+                        torch.save(model, os.path.join(output_dir, f"best_{model_type}"))
                 train_acc_sum, train_acc_n = 0, 0
                 check_processed -= check_every
-                if dev_acc > best_dev_acc:
-                    best_dev_acc = dev_acc
-                    torch.save(model, os.path.join(output_dir, f"best_{model_type}"))
 
             for j in range(0, len(examples), subbatch_size):
                 examples_subbatch = {k: v[j:j + subbatch_size] for k, v in examples.items()}
