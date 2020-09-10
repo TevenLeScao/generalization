@@ -29,6 +29,7 @@ def torch_distributed_zero_first(local_rank: int):
     Args:
         local_rank (:obj:`int`): The rank of the local process.
     """
+    print("\n\n\nbarrier\n\n\n")
     if local_rank not in [-1, 0]:
         torch.distributed.barrier()
     yield
@@ -66,13 +67,13 @@ def evaluate(model, eval_data, subbatch_size=64, hans=False, shots=None, train_d
 
 def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_dir, lr_base=3e-5, lr_warmup_frac=0.1,
           epochs=5, batch_size=32, subbatch_size=8, eval_batch_size=64, check_every=2048, initial_check=False,
-          shots=None, verbose=True):
+          shots=None, verbose=True, model_type=None):
     print("lr_base: {}, lr_warmup_frac: {}, epochs: {}, batch_size: {}, len(train_data): {}".format(
         lr_base, lr_warmup_frac, epochs, batch_size, len(train_data)))
 
     params = [p for n, p in model.named_parameters() if 'mask_score' not in n and p.requires_grad]
     optimizer = torch.optim.Adam([
-        {'params': params, 'lr': 0., 'lr_base': lr_base, 'name': model.model_type}, ], lr=0.)
+        {'params': params, 'lr': 0., 'lr_base': lr_base, 'name': model_type}, ], lr=0.)
 
     def set_lr(lr_ratio):
         for param_group in optimizer.param_groups:
@@ -107,35 +108,36 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
                 hans_hard_acc = evaluate(model, hans_hard_data, eval_batch_size, hans=True, shots=shots,
                                          train_data=train_data)
                 train_acc = train_acc_sum / train_acc_n if train_acc_n > 0 else None
-                if (local_rank == -1 or torch.distributed.get_rank() == 0) and not sanity:
+                if (local_rank == -1 or torch.distributed.get_rank() == 0):
                     if local_rank != -1:
                         dev_acc = distributed_broadcast_scalars(dev_acc).mean().item()
                         hans_easy_acc = distributed_broadcast_scalars(hans_easy_acc).mean().item()
                         hans_hard_acc = distributed_broadcast_scalars(hans_hard_acc).mean().item()
-                        train_acc = distributed_broadcast_scalars(train_acc).mean().item()
+                        if train_acc_n > 0:
+                            train_acc = distributed_broadcast_scalars(train_acc).mean().item()
                     else:
                         dev_acc = np.mean(dev_acc)
                         hans_easy_acc = np.mean(hans_easy_acc)
                         hans_hard_acc = np.mean(hans_hard_acc)
-                        train_acc = np.mean(train_acc)
                     log.append({'dev_acc': dev_acc,
                                 'hans_easy_acc': hans_easy_acc,
                                 'hans_hard_acc': hans_hard_acc,
                                 'total_hans_acc': (hans_easy_acc + hans_hard_acc) / 2,
                                 'train_acc': train_acc})
-                    wandb.log({'dev_acc': dev_acc,
-                               'hans_easy_acc': hans_easy_acc,
-                               'hans_hard_acc': hans_hard_acc,
-                               'total_hans_acc': (hans_easy_acc + hans_hard_acc) / 2,
-                               'train_acc': train_acc},
-                              step=step)
+                    if not sanity:
+                        wandb.log({'dev_acc': dev_acc,
+                                   'hans_easy_acc': hans_easy_acc,
+                                   'hans_hard_acc': hans_hard_acc,
+                                   'total_hans_acc': (hans_easy_acc + hans_hard_acc) / 2,
+                                   'train_acc': train_acc},
+                                  step=step)
                 train_acc_sum, train_acc_n = 0, 0
                 check_processed -= check_every
                 if verbose:
                     print("Epoch: {}, Log: {}".format(epoch, log[-1]))
                 if dev_acc > best_dev_acc:
                     best_dev_acc = dev_acc
-                    torch.save(model, os.path.join(output_dir, f"best_{model.model_type}"))
+                    torch.save(model, os.path.join(output_dir, f"best_{model_type}"))
 
             for j in range(0, len(examples), subbatch_size):
                 examples_subbatch = {k: v[j:j + subbatch_size] for k, v in examples.items()}
@@ -289,7 +291,7 @@ if __name__ == "__main__":
         log = train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_dir=output_dir, verbose=True,
                     epochs=args.epochs, batch_size=total_batch_size, subbatch_size=args.train_batch_size,
                     eval_batch_size=eval_batch_size, check_every=args.check_every, initial_check=args.initial_check,
-                    shots=shots)
+                    shots=shots, model_type=model_type)
 
     if args.plotting:
         for key in log[0].keys():
@@ -299,7 +301,7 @@ if __name__ == "__main__":
 
     if args.epochs > 0:
         print("reloading model")
-        model = torch.load(os.path.join(output_dir, f"best_{model.model_type}"))
+        model = torch.load(os.path.join(output_dir, f"best_{model_type}"))
     dev_acc = np.mean(evaluate(model, dev_data, eval_batch_size, shots=shots, train_data=train_data))
     test_acc = np.mean(evaluate(model, test_data, eval_batch_size, shots=shots, train_data=train_data))
     hans_easy_acc = np.mean(
