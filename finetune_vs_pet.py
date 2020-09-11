@@ -109,9 +109,9 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
                                          train_data=train_data)
                 if (local_rank == -1 or torch.distributed.get_rank() == 0):
                     if local_rank != -1:
-                        dev_acc = distributed_broadcast_scalars(dev_acc).mean().item()
-                        hans_easy_acc = distributed_broadcast_scalars(hans_easy_acc).mean().item()
-                        hans_hard_acc = distributed_broadcast_scalars(hans_hard_acc).mean().item()
+                        dev_acc = distributed_broadcast_scalars(dev_acc).cpu().mean().item()
+                        hans_easy_acc = distributed_broadcast_scalars(hans_easy_acc).cpu().mean().item()
+                        hans_hard_acc = distributed_broadcast_scalars(hans_hard_acc).cpu().mean().item()
                         if train_acc:
                             train_acc = distributed_broadcast_scalars(train_acc).mean().item()
                     else:
