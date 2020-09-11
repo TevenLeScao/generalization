@@ -113,7 +113,7 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
                         hans_easy_acc = distributed_broadcast_scalars(hans_easy_acc).cpu().mean().item()
                         hans_hard_acc = distributed_broadcast_scalars(hans_hard_acc).cpu().mean().item()
                         if train_acc:
-                            train_acc = distributed_broadcast_scalars(train_acc).mean().item()
+                            train_acc = distributed_broadcast_scalars(train_acc).cpu().mean().item()
                     else:
                         dev_acc = np.mean(dev_acc)
                         hans_easy_acc = np.mean(hans_easy_acc)
