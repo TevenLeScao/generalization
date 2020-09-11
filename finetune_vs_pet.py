@@ -299,7 +299,7 @@ if __name__ == "__main__":
             plt.title(key)
             plt.show()
 
-    if args.epochs > 0:
+    if args.epochs > 0 and not sanity:
         print("reloading model")
         model = torch.load(os.path.join(output_dir, f"best_{model_type}"))
     dev_acc = np.mean(evaluate(model, dev_data, eval_batch_size, shots=shots, train_data=train_data))
