@@ -85,7 +85,7 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
         check_processed = check_every
     else:
         check_processed = 0
-    train_acc_sum, train_acc_n = 0, 0
+    train_acc = []
     best_dev_acc = 0
     step = 0
 
@@ -107,18 +107,18 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
                                          train_data=train_data)
                 hans_hard_acc = evaluate(model, hans_hard_data, eval_batch_size, hans=True, shots=shots,
                                          train_data=train_data)
-                train_acc = train_acc_sum / train_acc_n if train_acc_n > 0 else None
                 if (local_rank == -1 or torch.distributed.get_rank() == 0):
                     if local_rank != -1:
                         dev_acc = distributed_broadcast_scalars(dev_acc).mean().item()
                         hans_easy_acc = distributed_broadcast_scalars(hans_easy_acc).mean().item()
                         hans_hard_acc = distributed_broadcast_scalars(hans_hard_acc).mean().item()
-                        if train_acc_n > 0:
+                        if train_acc:
                             train_acc = distributed_broadcast_scalars(train_acc).mean().item()
                     else:
                         dev_acc = np.mean(dev_acc)
                         hans_easy_acc = np.mean(hans_easy_acc)
                         hans_hard_acc = np.mean(hans_hard_acc)
+                        train_acc = np.mean(train_acc)
                     log.append({'dev_acc': dev_acc,
                                 'hans_easy_acc': hans_easy_acc,
                                 'hans_hard_acc': hans_hard_acc,
@@ -136,7 +136,7 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
                     if dev_acc > best_dev_acc:
                         best_dev_acc = dev_acc
                         torch.save(model, os.path.join(output_dir, f"best_{model_type}"))
-                train_acc_sum, train_acc_n = 0, 0
+                train_acc = []
                 check_processed -= check_every
 
             for j in range(0, len(examples), subbatch_size):
@@ -150,8 +150,7 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
                 del loss
 
                 batch_acc = (logits.argmax(axis=1) == labels).sum().item() / len(labels)
-                train_acc_sum += batch_acc
-                train_acc_n += 1
+                train_acc.append(batch_acc)
 
             optimizer.step()
             step += 1
