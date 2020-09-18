@@ -66,15 +66,11 @@ def evaluate(model, eval_data, hans=False, shots=None, train_data=None):
     return eval_acc
 
 
-def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_dir, lr_base=3e-5, lr_warmup_frac=0.1,
-          epochs=5, subbatch_size=8, check_every=2048, initial_check=False,
-          shots=None, verbose=True, model_type=None):
+def train(model, optimizer, train_data, dev_data, hans_easy_data, hans_hard_data, output_dir, lr_base=3e-5,
+          lr_warmup_frac=0.1, epochs=5, subbatch_size=8, check_every=2048, initial_check=False,
+          shots=None, verbose=True, model_type=None, fp16=None):
     print("lr_base: {}, lr_warmup_frac: {}, epochs: {}, len(train_data): {}".format(
         lr_base, lr_warmup_frac, epochs, len(train_data)))
-
-    params = [p for n, p in model.named_parameters() if 'mask_score' not in n and p.requires_grad]
-    optimizer = torch.optim.Adam([
-        {'params': params, 'lr': 0., 'lr_base': lr_base, 'name': model_type}, ], lr=0.)
 
     def set_lr(lr_ratio):
         for param_group in optimizer.param_groups:
@@ -97,20 +93,17 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
 
             if check_processed >= check_every:
                 dev_acc = evaluate(model, dev_data, eval_batch_size, shots=shots, train_data=train_data)
-                print(dev_acc)
-                print(dev_acc.shape)
                 hans_easy_acc = evaluate(model, hans_easy_data, hans=True, shots=shots,
                                          train_data=train_data)
-                print(hans_easy_acc)
-                print(hans_easy_acc.shape)
                 hans_hard_acc = evaluate(model, hans_hard_data, hans=True, shots=shots,
                                          train_data=train_data)
-                print(hans_hard_acc)
-                print(hans_hard_acc.shape)
                 if local_rank != -1:
-                    dev_acc = distributed_broadcast_scalars(dev_acc).cpu().mean().item()
-                    hans_easy_acc = distributed_broadcast_scalars(hans_easy_acc).cpu().mean().item()
-                    hans_hard_acc = distributed_broadcast_scalars(hans_hard_acc).cpu().mean().item()
+                    dev_acc = distributed_broadcast_scalars(dev_acc,
+                                                            num_total_examples=len(dev_data)).cpu().mean().item()
+                    hans_easy_acc = distributed_broadcast_scalars(hans_easy_acc, num_total_examples=len(
+                        hans_easy_data)).cpu().mean().item()
+                    hans_hard_acc = distributed_broadcast_scalars(hans_hard_acc, num_total_examples=len(
+                        hans_hard_data)).cpu().mean().item()
                     if train_acc:
                         train_acc = distributed_broadcast_scalars(train_acc).cpu().mean().item()
                 else:
@@ -118,11 +111,11 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
                     hans_easy_acc = np.mean(hans_easy_acc)
                     hans_hard_acc = np.mean(hans_hard_acc)
                     train_acc = np.mean(train_acc)
-                    log.append({'dev_acc': dev_acc,
-                                'hans_easy_acc': hans_easy_acc,
-                                'hans_hard_acc': hans_hard_acc,
-                                'total_hans_acc': (hans_easy_acc + hans_hard_acc) / 2,
-                                'train_acc': train_acc})
+                log.append({'dev_acc': dev_acc,
+                            'hans_easy_acc': hans_easy_acc,
+                            'hans_hard_acc': hans_hard_acc,
+                            'total_hans_acc': (hans_easy_acc + hans_hard_acc) / 2,
+                            'train_acc': train_acc})
                 if (local_rank == -1 or torch.distributed.get_rank() == 0):
                     if not sanity:
                         wandb.log({'dev_acc': dev_acc,
@@ -133,7 +126,16 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
                                   step=step)
                         if dev_acc > best_dev_acc:
                             best_dev_acc = dev_acc
-                            torch.save(model, os.path.join(output_dir, f"best_{model_type}"))
+                            if fp16 is None:
+                                torch.save(model, os.path.join(output_dir, f"best_{model_type}"))
+                            else:
+                                checkpoint = {
+                                    'model': model.state_dict(),
+                                    'optimizer': optimizer.state_dict(),
+                                    'amp': amp.state_dict()
+                                }
+                                torch.save(checkpoint, os.path.join(output_dir, 'amp_checkpoint.pt'))
+
                 if verbose:
                     print("Epoch: {}, Log: {}".format(epoch, log[-1]))
                 train_acc = []
@@ -146,7 +148,12 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
                 logits = model(examples_subbatch["premise"], examples_subbatch["hypothesis"])
                 labels = examples_subbatch["label"].to(device=logits.device)
                 loss = F.cross_entropy(logits, labels)
-                loss.backward()
+
+                if fp16 is not None:
+                    with amp.scale_loss(loss, optimizer) as scaled_loss:
+                        scaled_loss.backward()
+                else:
+                    loss.backward()
                 del loss
 
                 batch_acc = (logits.argmax(axis=1) == labels).sum().item() / len(labels)
@@ -220,10 +227,12 @@ if __name__ == "__main__":
     token_limit = args.token_limit
     model_type = args.model
     data_size = args.data_size
+    lr_base = args.lr
     eval_data_size = args.eval_data_size
     eval_batch_size = args.eval_batch_size
     train_batch_size = args.train_batch_size
     local_rank = args.local_rank
+    fp16 = args.fp16
 
     device, n_gpu = setup_device(local_rank)
     if model_type == "bert":
@@ -238,6 +247,13 @@ if __name__ == "__main__":
     else:
         # MNLI has 3 labels
         model = MLPClassifier(lm, 3, device=device).to(device)
+    params = [p for n, p in model.named_parameters() if 'mask_score' not in n and p.requires_grad]
+    optimizer = torch.optim.Adam([
+        {'params': params, 'lr': 0., 'lr_base': lr_base, 'name': model_type}, ], lr=0.)
+    if fp16 is not None:
+        from apex import amp
+
+        model, optimizer = amp.initialize(model, optimizer, opt_level=fp16)
     if local_rank != -1:
         model = torch.nn.parallel.DistributedDataParallel(
             model,
@@ -293,10 +309,11 @@ if __name__ == "__main__":
         )
 
     if not args.reload:
-        log = train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_dir=output_dir, verbose=True,
+        log = train(model, optimizer, train_data, dev_data, hans_easy_data, hans_hard_data, output_dir=output_dir,
+                    verbose=True,
                     epochs=args.epochs, subbatch_size=args.train_batch_size,
                     check_every=args.check_every, initial_check=args.initial_check,
-                    shots=shots, model_type=model_type)
+                    shots=shots, model_type=model_type, fp16=fp16)
 
     if args.plotting:
         for key in log[0].keys():
@@ -306,7 +323,14 @@ if __name__ == "__main__":
 
     if args.epochs > 0 and not sanity:
         print("reloading model")
-        model = torch.load(os.path.join(output_dir, f"best_{model_type}"))
+        if fp16 is None:
+            model = torch.load(os.path.join(output_dir, f"best_{model_type}"))
+        else:
+            checkpoint = torch.load(os.path.join(output_dir, 'amp_checkpoint.pt'))
+            model, optimizer = amp.initialize(model, optimizer, opt_level=fp16)
+            model.load_state_dict(checkpoint['model'])
+            optimizer.load_state_dict(checkpoint['optimizer'])
+            amp.load_state_dict(checkpoint['amp'])
     dev_acc = np.mean(evaluate(model, dev_data, eval_batch_size, shots=shots, train_data=train_data))
     test_acc = np.mean(evaluate(model, test_data, eval_batch_size, shots=shots, train_data=train_data))
     hans_easy_acc = np.mean(
