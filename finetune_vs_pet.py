@@ -97,27 +97,33 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
 
             if check_processed >= check_every:
                 dev_acc = evaluate(model, dev_data, eval_batch_size, shots=shots, train_data=train_data)
+                print(dev_acc)
+                print(dev_acc.shape)
                 hans_easy_acc = evaluate(model, hans_easy_data, hans=True, shots=shots,
                                          train_data=train_data)
+                print(hans_easy_acc)
+                print(hans_easy_acc.shape)
                 hans_hard_acc = evaluate(model, hans_hard_data, hans=True, shots=shots,
                                          train_data=train_data)
-                if (local_rank == -1 or torch.distributed.get_rank() == 0):
-                    if local_rank != -1:
-                        dev_acc = distributed_broadcast_scalars(dev_acc).cpu().mean().item()
-                        hans_easy_acc = distributed_broadcast_scalars(hans_easy_acc).cpu().mean().item()
-                        hans_hard_acc = distributed_broadcast_scalars(hans_hard_acc).cpu().mean().item()
-                        if train_acc:
-                            train_acc = distributed_broadcast_scalars(train_acc).cpu().mean().item()
-                    else:
-                        dev_acc = np.mean(dev_acc)
-                        hans_easy_acc = np.mean(hans_easy_acc)
-                        hans_hard_acc = np.mean(hans_hard_acc)
-                        train_acc = np.mean(train_acc)
+                print(hans_hard_acc)
+                print(hans_hard_acc.shape)
+                if local_rank != -1:
+                    dev_acc = distributed_broadcast_scalars(dev_acc).cpu().mean().item()
+                    hans_easy_acc = distributed_broadcast_scalars(hans_easy_acc).cpu().mean().item()
+                    hans_hard_acc = distributed_broadcast_scalars(hans_hard_acc).cpu().mean().item()
+                    if train_acc:
+                        train_acc = distributed_broadcast_scalars(train_acc).cpu().mean().item()
+                else:
+                    dev_acc = np.mean(dev_acc)
+                    hans_easy_acc = np.mean(hans_easy_acc)
+                    hans_hard_acc = np.mean(hans_hard_acc)
+                    train_acc = np.mean(train_acc)
                     log.append({'dev_acc': dev_acc,
                                 'hans_easy_acc': hans_easy_acc,
                                 'hans_hard_acc': hans_hard_acc,
                                 'total_hans_acc': (hans_easy_acc + hans_hard_acc) / 2,
                                 'train_acc': train_acc})
+                if (local_rank == -1 or torch.distributed.get_rank() == 0):
                     if not sanity:
                         wandb.log({'dev_acc': dev_acc,
                                    'hans_easy_acc': hans_easy_acc,
@@ -125,11 +131,11 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
                                    'total_hans_acc': (hans_easy_acc + hans_hard_acc) / 2,
                                    'train_acc': train_acc},
                                   step=step)
-                    if verbose:
-                        print("Epoch: {}, Log: {}".format(epoch, log[-1]))
-                    if dev_acc > best_dev_acc:
-                        best_dev_acc = dev_acc
-                        torch.save(model, os.path.join(output_dir, f"best_{model_type}"))
+                        if dev_acc > best_dev_acc:
+                            best_dev_acc = dev_acc
+                            torch.save(model, os.path.join(output_dir, f"best_{model_type}"))
+                if verbose:
+                    print("Epoch: {}, Log: {}".format(epoch, log[-1]))
                 train_acc = []
                 check_processed -= check_every
 
