@@ -5,8 +5,7 @@ from math import ceil
 import numpy as np
 import torch
 from torch import nn as nn
-from transformers import BertForMaskedLM, BertTokenizerFast, RobertaForMaskedLM, RobertaTokenizerFast, PreTrainedModel, \
-    Trainer
+from transformers import BertForMaskedLM, BertTokenizerFast, RobertaForMaskedLM, RobertaTokenizerFast, LongformerForMaskedLM, LongformerTokenizerFast
 
 from utils import combine_encodings
 
@@ -17,6 +16,7 @@ class ModelWrapper(nn.Module):
         MODEL_CLASSES = {
             'bert': (BertForMaskedLM, BertTokenizerFast),
             'roberta': (RobertaForMaskedLM, RobertaTokenizerFast),
+            'longformer': (LongformerForMaskedLM, LongformerTokenizerFast),
         }
         model_class, tokenizer_class = MODEL_CLASSES[model_type]
         self.tokenizer = tokenizer_class.from_pretrained(model_name, do_lower_case=('uncased' in model_name))

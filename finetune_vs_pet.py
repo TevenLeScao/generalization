@@ -141,7 +141,7 @@ def train(model, optimizer, train_data, dev_data, hans_easy_data, hans_hard_data
                 train_acc = []
                 check_processed -= check_every
 
-            for j in range(0, len(examples), subbatch_size):
+            for j in range(0, train_data.batch_size, subbatch_size):
                 examples_subbatch = {k: v[j:j + subbatch_size] for k, v in examples.items()}
 
                 # compute loss, also log other metrics
@@ -161,8 +161,8 @@ def train(model, optimizer, train_data, dev_data, hans_easy_data, hans_hard_data
 
             optimizer.step()
             step += 1
-            processed += len(examples)
-            check_processed += len(examples)
+            processed += train_data.batch_size
+            check_processed += train_data.batch_size
 
             # warmup from 0 to lr_base for lr_warmup_frac
             lr_ratio = min(1, processed / (lr_warmup_frac * epochs * len(train_data)))
@@ -226,6 +226,7 @@ if __name__ == "__main__":
     shots = args.shots
     token_limit = args.token_limit
     model_type = args.model
+    model_size = args.model_size
     data_size = args.data_size
     lr_base = args.lr
     eval_data_size = args.eval_data_size
@@ -236,9 +237,11 @@ if __name__ == "__main__":
 
     device, n_gpu = setup_device(local_rank)
     if model_type == "bert":
-        lm = ModelWrapper('bert', 'bert-base-uncased', token_limit=token_limit, device=device)
+        lm = ModelWrapper('bert', f'bert-{model_size}-uncased', token_limit=token_limit, device=device)
     elif model_type == "roberta":
-        lm = ModelWrapper('roberta', 'roberta-base', token_limit=token_limit, device=device)
+        lm = ModelWrapper('roberta', f'roberta-{model_size}', token_limit=token_limit, device=device)
+    elif model_type == "longformer":
+        lm = ModelWrapper('longformer', f'allenai/longformer-{model_size}-4096', token_limit=token_limit, device=device)
     else:
         raise KeyError(f"model type {model_type} not supported")
     if do_mlm:
