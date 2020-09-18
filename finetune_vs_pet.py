@@ -50,7 +50,7 @@ def evaluate(model, eval_data, hans=False, shots=None, train_data=None):
                 if shots > 0:
                     assert train_data is not None, "shots passed, indicating lm-style inference, but no train_data"
                     shot_indexes = random.sample(list(range(len(train_data))), shots)
-                    shot_data = train_data[shot_indexes]
+                    shot_data = train_data.dataset[shot_indexes]
                     logits = model(examples["premise"], examples["hypothesis"], shot_data["premise"],
                                    shot_data["labeled_hypothesis"])
                 else:
