@@ -327,7 +327,6 @@ if __name__ == "__main__":
             model = torch.load(os.path.join(output_dir, f"best_{model_type}"))
         else:
             checkpoint = torch.load(os.path.join(output_dir, 'amp_checkpoint.pt'))
-            model, optimizer = amp.initialize(model, optimizer, opt_level=fp16)
             model.load_state_dict(checkpoint['model'])
             optimizer.load_state_dict(checkpoint['optimizer'])
             amp.load_state_dict(checkpoint['amp'])
