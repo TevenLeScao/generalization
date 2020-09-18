@@ -138,7 +138,7 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
 
                 # compute loss, also log other metrics
                 logits = model(examples_subbatch["premise"], examples_subbatch["hypothesis"])
-                labels = torch.tensor(examples_subbatch["label"], device=logits.device)
+                labels = examples_subbatch["label"].to(device=logits.device)
                 loss = F.cross_entropy(logits, labels)
                 loss.backward()
                 del loss
@@ -266,13 +266,14 @@ if __name__ == "__main__":
         hans_easy_data = hans_easy_data.map(partial(add_prototype, mask_token=mask_token, classes=classes))
         hans_hard_data = hans_hard_data.map(partial(add_prototype, mask_token=mask_token, classes=classes))
 
-    sampler = RandomSampler if local_rank == -1 else DistributedSampler
+    train_sampler = RandomSampler if local_rank == -1 else DistributedSampler
+    eval_sampler = RandomSampler if local_rank == -1 else SequentialDistributedSampler
     total_batch_size = args.accumulate * train_batch_size
-    train_data = DataLoader(train_data, sampler=sampler(train_data), batch_size=total_batch_size)
-    dev_data = DataLoader(dev_data, sampler=sampler(dev_data), batch_size=eval_batch_size)
-    test_data = DataLoader(test_data, sampler=sampler(test_data), batch_size=eval_batch_size)
-    hans_easy_data = DataLoader(hans_easy_data, sampler=sampler(hans_easy_data), batch_size=eval_batch_size)
-    hans_hard_data = DataLoader(hans_hard_data, sampler=sampler(hans_hard_data), batch_size=eval_batch_size)
+    train_data = DataLoader(train_data, sampler=train_sampler(train_data), batch_size=total_batch_size)
+    dev_data = DataLoader(dev_data, sampler=eval_sampler(dev_data), batch_size=eval_batch_size)
+    test_data = DataLoader(test_data, sampler=eval_sampler(test_data), batch_size=eval_batch_size)
+    hans_easy_data = DataLoader(hans_easy_data, sampler=eval_sampler(hans_easy_data), batch_size=eval_batch_size)
+    hans_hard_data = DataLoader(hans_hard_data, sampler=eval_sampler(hans_hard_data), batch_size=eval_batch_size)
 
     name = run_name(model_type, do_mlm, shots, len(train_data))
     output_dir = os.path.join(args.xp_dir, f"{model_type}_{'pet' if do_mlm else 'finetuned'}")
