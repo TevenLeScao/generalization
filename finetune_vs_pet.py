@@ -6,12 +6,14 @@ from functools import partial
 from contextlib import contextmanager
 
 from matplotlib import pyplot as plt
+from torch.utils.data import RandomSampler, DistributedSampler, DataLoader
 from tqdm import tqdm
 import nlp
 import numpy as np
 import torch
 import torch.nn.functional as F
 import wandb
+from transformers.trainer import SequentialDistributedSampler
 
 from argparsing import parser
 from classifiers import MLPClassifier, MLMClassifier
@@ -37,17 +39,16 @@ def torch_distributed_zero_first(local_rank: int):
         torch.distributed.barrier()
 
 
-def evaluate(model, eval_data, subbatch_size=64, hans=False, shots=None, train_data=None):
+def evaluate(model, eval_data, hans=False, shots=None, train_data=None):
     model.eval()
     with torch.no_grad():
         preds = None
-        for j in tqdm(range(0, len(eval_data), subbatch_size)):
-            examples = eval_data[j:j + subbatch_size]
+        for examples in tqdm(eval_data):
             if shots is None:
                 logits = model(examples["premise"], examples["hypothesis"])
             else:
-                assert train_data is not None, "shots passed, indicating lm-style inference, but no train_data"
                 if shots > 0:
+                    assert train_data is not None, "shots passed, indicating lm-style inference, but no train_data"
                     shot_indexes = random.sample(list(range(len(train_data))), shots)
                     shot_data = train_data[shot_indexes]
                     logits = model(examples["premise"], examples["hypothesis"], shot_data["premise"],
@@ -61,15 +62,15 @@ def evaluate(model, eval_data, subbatch_size=64, hans=False, shots=None, train_d
                 preds = np.concatenate((preds, preds_batch), axis=0)
             if hans:
                 preds = np.clip(preds, 0, 1)
-        eval_acc = np.array([exmp['label'] for exmp in eval_data]) == preds
+        eval_acc = np.array(torch.cat([exmp['label'] for exmp in eval_data])) == preds
     return eval_acc
 
 
 def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_dir, lr_base=3e-5, lr_warmup_frac=0.1,
-          epochs=5, batch_size=32, subbatch_size=8, eval_batch_size=64, check_every=2048, initial_check=False,
+          epochs=5, subbatch_size=8, check_every=2048, initial_check=False,
           shots=None, verbose=True, model_type=None):
-    print("lr_base: {}, lr_warmup_frac: {}, epochs: {}, batch_size: {}, len(train_data): {}".format(
-        lr_base, lr_warmup_frac, epochs, batch_size, len(train_data)))
+    print("lr_base: {}, lr_warmup_frac: {}, epochs: {}, len(train_data): {}".format(
+        lr_base, lr_warmup_frac, epochs, len(train_data)))
 
     params = [p for n, p in model.named_parameters() if 'mask_score' not in n and p.requires_grad]
     optimizer = torch.optim.Adam([
@@ -90,22 +91,15 @@ def train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_di
     step = 0
 
     for epoch in tqdm(range(epochs)):
-        train_data.shuffle()
-        if local_rank != -1:
-            train_data = train_data.shard(torch.distributed.get_world_size(), local_rank)
-            dev_data = dev_data.shard(torch.distributed.get_world_size(), local_rank)
-            hans_easy_data = hans_easy_data.shard(torch.distributed.get_world_size(), local_rank)
-            hans_hard_data = hans_hard_data.shard(torch.distributed.get_world_size(), local_rank)
-        for i in tqdm(range(0, len(train_data), batch_size)):
-            examples = train_data[i:i + batch_size]
+        for examples in tqdm(train_data):
             model.train()
             optimizer.zero_grad()
 
             if check_processed >= check_every:
                 dev_acc = evaluate(model, dev_data, eval_batch_size, shots=shots, train_data=train_data)
-                hans_easy_acc = evaluate(model, hans_easy_data, eval_batch_size, hans=True, shots=shots,
+                hans_easy_acc = evaluate(model, hans_easy_data, hans=True, shots=shots,
                                          train_data=train_data)
-                hans_hard_acc = evaluate(model, hans_hard_data, eval_batch_size, hans=True, shots=shots,
+                hans_hard_acc = evaluate(model, hans_hard_data, hans=True, shots=shots,
                                          train_data=train_data)
                 if (local_rank == -1 or torch.distributed.get_rank() == 0):
                     if local_rank != -1:
@@ -222,6 +216,7 @@ if __name__ == "__main__":
     data_size = args.data_size
     eval_data_size = args.eval_data_size
     eval_batch_size = args.eval_batch_size
+    train_batch_size = args.train_batch_size
     local_rank = args.local_rank
 
     device, n_gpu = setup_device(local_rank)
@@ -271,8 +266,13 @@ if __name__ == "__main__":
         hans_easy_data = hans_easy_data.map(partial(add_prototype, mask_token=mask_token, classes=classes))
         hans_hard_data = hans_hard_data.map(partial(add_prototype, mask_token=mask_token, classes=classes))
 
-    print(len(train_data), len(dev_data), len(test_data))
-    print(train_data[0], dev_data[0], test_data[0])
+    sampler = RandomSampler if local_rank == -1 else DistributedSampler
+    total_batch_size = args.accumulate * train_batch_size
+    train_data = DataLoader(train_data, sampler=sampler(train_data), batch_size=total_batch_size)
+    dev_data = DataLoader(dev_data, sampler=sampler(dev_data), batch_size=eval_batch_size)
+    test_data = DataLoader(test_data, sampler=sampler(test_data), batch_size=eval_batch_size)
+    hans_easy_data = DataLoader(hans_easy_data, sampler=sampler(hans_easy_data), batch_size=eval_batch_size)
+    hans_hard_data = DataLoader(hans_hard_data, sampler=sampler(hans_hard_data), batch_size=eval_batch_size)
 
     name = run_name(model_type, do_mlm, shots, len(train_data))
     output_dir = os.path.join(args.xp_dir, f"{model_type}_{'pet' if do_mlm else 'finetuned'}")
@@ -285,11 +285,10 @@ if __name__ == "__main__":
             project=os.getenv("WANDB_PROJECT", "huggingface"), name=name
         )
 
-    total_batch_size = args.accumulate * args.train_batch_size
     if not args.reload:
         log = train(model, train_data, dev_data, hans_easy_data, hans_hard_data, output_dir=output_dir, verbose=True,
-                    epochs=args.epochs, batch_size=total_batch_size, subbatch_size=args.train_batch_size,
-                    eval_batch_size=eval_batch_size, check_every=args.check_every, initial_check=args.initial_check,
+                    epochs=args.epochs, subbatch_size=args.train_batch_size,
+                    check_every=args.check_every, initial_check=args.initial_check,
                     shots=shots, model_type=model_type)
 
     if args.plotting:
@@ -304,9 +303,9 @@ if __name__ == "__main__":
     dev_acc = np.mean(evaluate(model, dev_data, eval_batch_size, shots=shots, train_data=train_data))
     test_acc = np.mean(evaluate(model, test_data, eval_batch_size, shots=shots, train_data=train_data))
     hans_easy_acc = np.mean(
-        evaluate(model, hans_easy_data, eval_batch_size, hans=True, shots=shots, train_data=train_data))
+        evaluate(model, hans_easy_data, hans=True, shots=shots, train_data=train_data))
     hans_hard_acc = np.mean(
-        evaluate(model, hans_hard_data, eval_batch_size, hans=True, shots=shots, train_data=train_data))
+        evaluate(model, hans_hard_data, hans=True, shots=shots, train_data=train_data))
     log.append(
         {'dev_acc': dev_acc, 'test_acc': test_acc, 'hans_easy_acc': hans_easy_acc, 'hans_hard_acc': hans_hard_acc,
          'total_hans_acc': (hans_easy_acc + hans_hard_acc) / 2, })
